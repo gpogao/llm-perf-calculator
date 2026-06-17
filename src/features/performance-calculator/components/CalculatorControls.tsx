@@ -1,0 +1,311 @@
+import type { ModelDefinition, ModelId } from "../../../domain/model/types";
+import type { PlatformInput } from "../../../domain/platform/types";
+import type { WorkloadInput } from "../../../domain/workload/types";
+import { modelRegistry } from "../../../engines/model-registry";
+import type {
+  CalculatorValidation,
+  CalculatorViewState
+} from "../state/useCalculatorState";
+
+type Props = {
+  modelId: ModelId;
+  selectedModel: ModelDefinition;
+  platform: PlatformInput;
+  workload: WorkloadInput;
+  view: CalculatorViewState;
+  validationErrors: CalculatorValidation;
+  onModelIdChange: (modelId: ModelId) => void;
+  onPlatformChange: <K extends keyof PlatformInput>(key: K, value: PlatformInput[K]) => void;
+  onWorkloadChange: <K extends keyof WorkloadInput>(key: K, value: WorkloadInput[K]) => void;
+  onViewChange: <K extends keyof CalculatorViewState>(
+    key: K,
+    value: CalculatorViewState[K]
+  ) => void;
+  onQuickRange: (tokenLength: number) => void;
+  onCalculate: () => void;
+  onReset: () => void;
+  statusText: string;
+};
+
+function numberValue(value: string) {
+  return Number(value);
+}
+
+function FieldError({ message }: { message?: string }) {
+  if (!message) {
+    return null;
+  }
+
+  return <span className="field-error">{message}</span>;
+}
+
+export function CalculatorControls({
+  modelId,
+  selectedModel,
+  platform,
+  workload,
+  view,
+  validationErrors,
+  onModelIdChange,
+  onPlatformChange,
+  onWorkloadChange,
+  onViewChange,
+  onQuickRange,
+  onCalculate,
+  onReset,
+  statusText
+}: Props) {
+  return (
+    <div className="calculator-controls">
+      <div className="panel-grid panel-grid--controls">
+        <article className="panel">
+          <h3>模型选择</h3>
+          <label className="field">
+            <span>模型</span>
+            <select
+              value={modelId}
+              onChange={(event) => onModelIdChange(event.target.value as ModelId)}
+            >
+              {modelRegistry.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <dl className="summary-list">
+            <div>
+              <dt>Layers</dt>
+              <dd>{selectedModel.decoderLayers}</dd>
+            </div>
+            <div>
+              <dt>Hidden Size</dt>
+              <dd>{selectedModel.hiddenSize}</dd>
+            </div>
+            <div>
+              <dt>Experts</dt>
+              <dd>
+                {selectedModel.activeExperts} / {selectedModel.moeExperts}
+              </dd>
+            </div>
+            <div>
+              <dt>Context</dt>
+              <dd>{(selectedModel.contextLimit / 1024).toFixed(0)}K</dd>
+            </div>
+          </dl>
+        </article>
+
+        <article className="panel">
+          <h3>输入长度</h3>
+          <div className="form-grid">
+            <label className="field">
+              <span>Prefill Token Length</span>
+              <input
+                type="number"
+                value={workload.prefillTokenLength}
+                onChange={(event) =>
+                  onWorkloadChange("prefillTokenLength", numberValue(event.target.value))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Decode Context Length</span>
+              <input
+                type="number"
+                value={workload.decodeContextLength}
+                onChange={(event) =>
+                  onWorkloadChange("decodeContextLength", numberValue(event.target.value))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Decode Output Tokens</span>
+              <input
+                type="number"
+                value={workload.decodeOutputTokens}
+                onChange={(event) =>
+                  onWorkloadChange("decodeOutputTokens", numberValue(event.target.value))
+                }
+              />
+            </label>
+          </div>
+          <div className="quick-actions">
+            {[4096, 32768, 131072, 1048576].map((tokenLength) => (
+              <button
+                key={tokenLength}
+                type="button"
+                className="ghost-button"
+                onClick={() => onQuickRange(tokenLength)}
+              >
+                {tokenLength >= 1048576 ? "1M" : `${tokenLength / 1024}K`}
+              </button>
+            ))}
+          </div>
+          <div className="form-grid">
+            <label className="field">
+              <span>Token Sweep Start</span>
+              <input
+                type="number"
+                value={workload.tokenRangeStart}
+                onChange={(event) =>
+                  onWorkloadChange("tokenRangeStart", numberValue(event.target.value))
+                }
+              />
+              <FieldError message={validationErrors.tokenRangeStart} />
+            </label>
+            <label className="field">
+              <span>Token Sweep End</span>
+              <input
+                type="number"
+                value={workload.tokenRangeEnd}
+                onChange={(event) =>
+                  onWorkloadChange("tokenRangeEnd", numberValue(event.target.value))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Token Sweep Step</span>
+              <input
+                type="number"
+                value={workload.tokenRangeStep}
+                onChange={(event) =>
+                  onWorkloadChange("tokenRangeStep", numberValue(event.target.value))
+                }
+              />
+              <FieldError message={validationErrors.tokenRangeStep} />
+            </label>
+          </div>
+        </article>
+
+        <article className="panel">
+          <h3>平台参数</h3>
+          <div className="form-grid">
+            <label className="field">
+              <span>Compute Throughput (TFLOPS)</span>
+              <input
+                type="number"
+                value={platform.computeThroughputTflops}
+                onChange={(event) =>
+                  onPlatformChange("computeThroughputTflops", numberValue(event.target.value))
+                }
+              />
+              <FieldError message={validationErrors.computeThroughputTflops} />
+            </label>
+            <label className="field">
+              <span>Memory Bandwidth (TB/s)</span>
+              <input
+                type="number"
+                step="0.01"
+                value={platform.memoryBandwidthTbps}
+                onChange={(event) =>
+                  onPlatformChange("memoryBandwidthTbps", numberValue(event.target.value))
+                }
+              />
+              <FieldError message={validationErrors.memoryBandwidthTbps} />
+            </label>
+            <label className="field">
+              <span>HBM / VRAM Capacity (GB)</span>
+              <input
+                type="number"
+                value={platform.memoryCapacityGb}
+                onChange={(event) =>
+                  onPlatformChange("memoryCapacityGb", numberValue(event.target.value))
+                }
+              />
+              <FieldError message={validationErrors.memoryCapacityGb} />
+            </label>
+            <label className="field">
+              <span>Precision Assumptions</span>
+              <input
+                type="text"
+                value={platform.precisionAssumptions}
+                onChange={(event) =>
+                  onPlatformChange("precisionAssumptions", event.target.value)
+                }
+              />
+            </label>
+          </div>
+        </article>
+
+        <article className="panel">
+          <h3>计算假设</h3>
+          <div className="form-grid">
+            <label className="field">
+              <span>Batch Size</span>
+              <input
+                type="number"
+                value={platform.batchSize}
+                onChange={(event) =>
+                  onPlatformChange("batchSize", numberValue(event.target.value))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Compute Efficiency</span>
+              <input
+                type="number"
+                step="0.01"
+                value={platform.computeEfficiency}
+                onChange={(event) =>
+                  onPlatformChange("computeEfficiency", numberValue(event.target.value))
+                }
+              />
+            </label>
+            <label className="field">
+              <span>Bandwidth Efficiency</span>
+              <input
+                type="number"
+                step="0.01"
+                value={platform.bandwidthEfficiency}
+                onChange={(event) =>
+                  onPlatformChange("bandwidthEfficiency", numberValue(event.target.value))
+                }
+              />
+            </label>
+            <label className="field field--checkbox">
+              <input
+                type="checkbox"
+                checked={platform.useMemoryCeilingClamp}
+                onChange={(event) =>
+                  onPlatformChange("useMemoryCeilingClamp", event.target.checked)
+                }
+              />
+              <span>Use Memory Ceiling Clamp</span>
+            </label>
+            <label className="field field--checkbox">
+              <input
+                type="checkbox"
+                checked={view.showIntermediateMetrics}
+                onChange={(event) =>
+                  onViewChange("showIntermediateMetrics", event.target.checked)
+                }
+              />
+              <span>Show Intermediate Metrics</span>
+            </label>
+            <label className="field field--checkbox">
+              <input
+                type="checkbox"
+                checked={view.showFormulaTrace}
+                onChange={(event) => onViewChange("showFormulaTrace", event.target.checked)}
+              />
+              <span>Show Formula Trace</span>
+            </label>
+          </div>
+        </article>
+      </div>
+
+      <div className="toolbar">
+        <div className="toolbar__actions">
+          <button type="button" className="primary-button" onClick={onCalculate}>
+            计算性能
+          </button>
+          <button type="button" className="secondary-button" onClick={onReset}>
+            重置
+          </button>
+        </div>
+        <p className="status-pill">{statusText}</p>
+      </div>
+    </div>
+  );
+}
+
