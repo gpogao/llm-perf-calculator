@@ -25,15 +25,32 @@ type LayerBreakdown = {
 type FullComputation = {
   prefillFlops: number;
   decodeBytes: number;
+  decodeCacheBytes: number;
+  decodeWeightBytes: number;
   weightGb: number;
   cacheGb: number;
+  persistentSlidingCacheBytes: number;
+  persistentHcaCacheBytes: number;
+  persistentCsaCacheBytes: number;
+  persistentSlidingCacheTotalBytes: number;
+  persistentHcaCacheTotalBytes: number;
+  persistentCsaCacheTotalBytes: number;
   tmpPeakGb: number;
+  tmpPeakBytes: number;
+  tmpPeakLkv: number;
   overheadGb: number;
   totalRuntimeMemoryGb: number;
   prefillComputeTps: number;
   prefillBandwidthTps: number;
   decodeComputeTps: number;
   decodeBandwidthTps: number;
+  decodeComputeFlopsPerToken: number;
+  decodeSlidingLkv: number;
+  decodeCsaLkv: number;
+  decodeHcaLkv: number;
+  decodeSlidingBytesPerToken: number;
+  decodeCsaBytesPerToken: number;
+  decodeHcaBytesPerToken: number;
   prefillTps: number;
   decodeTps: number;
   ttftMs: number;
@@ -45,8 +62,8 @@ type FullComputation = {
   hcaLayer: LayerBreakdown;
 };
 
-function toTiBPerSecond(valueTbps: number) {
-  return valueTbps * 1_000_000_000_000;
+function gbpsToBytesPerSecond(valueGbps: number) {
+  return valueGbps * 1_000_000_000;
 }
 
 function toFlops(valueTflops: number) {
@@ -61,15 +78,30 @@ function formatTflops(value: number) {
   return `${(value / 1e12).toFixed(2)} T`;
 }
 
-function inferBottleneck(
-  computeLimit: number,
-  bandwidthLimit: number,
-  fitsCapacity: boolean
-): BottleneckType {
-  if (!fitsCapacity) {
-    return "memory-cap-limited";
+function formatGflops(value: number) {
+  return `${(value / 1e9).toFixed(2)} G`;
+}
+
+function formatMb(value: number) {
+  return `${(value / 1_000_000).toFixed(2)} MB`;
+}
+
+function formatLayerContribution(
+  layer: LayerBreakdown,
+  layerCount: number,
+  key: keyof LayerBreakdown
+) {
+  if (layerCount === 0) {
+    return "0.00 T";
   }
 
+  return `${formatTflops(layer[key])} x ${layerCount} = ${formatTflops(layer[key] * layerCount)}`;
+}
+
+function inferBottleneck(
+  computeLimit: number,
+  bandwidthLimit: number
+): BottleneckType {
   return computeLimit <= bandwidthLimit ? "compute-bound" : "bandwidth-bound";
 }
 
@@ -176,16 +208,46 @@ function decodeCacheBytes(
   batchSize: number,
   contextLength: number
 ) {
+  return (
+    model.slidingLayerCount *
+      persistentSlidingCacheBytes(model, batchSize) +
+    model.hcaLayerCount *
+      persistentHcaCacheBytes(model, batchSize, contextLength) +
+    model.csaLayerCount *
+      persistentCsaCacheBytes(model, batchSize, contextLength)
+  );
+}
+
+function persistentSlidingCacheBytes(
+  model: ModelDefinition,
+  batchSize: number
+) {
   const e = 2;
-  const slidingBytes =
-    batchSize * e * (model.slidingWindow - 1) * model.headDim;
-  const hcaBytes =
+  return batchSize * e * (model.slidingWindow - 1) * model.headDim;
+}
+
+function persistentHcaCacheBytes(
+  model: ModelDefinition,
+  batchSize: number,
+  contextLength: number
+) {
+  const e = 2;
+  return (
     batchSize *
     e *
     ((model.slidingWindow - 1) * model.headDim +
       Math.floor(contextLength / model.hcaCompressRate) * model.headDim +
-      2 * (contextLength % model.hcaCompressRate) * model.headDim);
-  const csaBytes =
+      2 * (contextLength % model.hcaCompressRate) * model.headDim)
+  );
+}
+
+function persistentCsaCacheBytes(
+  model: ModelDefinition,
+  batchSize: number,
+  contextLength: number
+) {
+  const e = 2;
+  return (
     batchSize *
     e *
     ((model.slidingWindow - 1) * model.headDim +
@@ -194,12 +256,7 @@ function decodeCacheBytes(
       4 *
         (contextLength % model.csaCompressRate) *
         (model.headDim + model.indexHeadDim) +
-      2 * model.csaCompressRate * (model.headDim + model.indexHeadDim));
-
-  return (
-    model.slidingLayerCount * slidingBytes +
-    model.hcaLayerCount * hcaBytes +
-    model.csaLayerCount * csaBytes
+      2 * model.csaCompressRate * (model.headDim + model.indexHeadDim))
   );
 }
 
@@ -209,27 +266,49 @@ function decodeTmpPeakBytes(
   contextLength: number
 ) {
   const e = 2;
-  const csaLkv =
-    model.slidingWindow +
-    Math.min(model.indexTopk, Math.floor(contextLength / model.csaCompressRate));
-  const hcaLkv =
-    model.slidingWindow + Math.floor(contextLength / model.hcaCompressRate);
+  const csaLkv = decodeCsaLkv(model, contextLength);
+  const hcaLkv = decodeHcaLkv(model, contextLength);
   const peakLkv = Math.max(csaLkv, hcaLkv, model.slidingWindow);
 
   return batchSize * e * 2 * model.attentionHeads * peakLkv * model.headDim;
 }
 
-function decodeBytesPerToken(model: ModelDefinition, contextLength: number) {
-  const e = 2;
-  const csaLkv =
+function decodeCsaLkv(model: ModelDefinition, contextLength: number) {
+  return (
     model.slidingWindow +
-    Math.min(model.indexTopk, Math.floor(contextLength / model.csaCompressRate));
-  const hcaLkv =
-    model.slidingWindow + Math.floor(contextLength / model.hcaCompressRate);
-  const slidingBytes =
-    2 * model.attentionHeads * model.slidingWindow * model.headDim * e;
-  const csaBytes = 2 * model.attentionHeads * csaLkv * model.headDim * e;
-  const hcaBytes = 2 * model.attentionHeads * hcaLkv * model.headDim * e;
+    Math.min(model.indexTopk, Math.floor(contextLength / model.csaCompressRate))
+  );
+}
+
+function decodeHcaLkv(model: ModelDefinition, contextLength: number) {
+  return model.slidingWindow + Math.floor(contextLength / model.hcaCompressRate);
+}
+
+function decodeLayerBytesPerToken(
+  model: ModelDefinition,
+  lkv: number,
+  batchSize = 1
+) {
+  const e = 2;
+  return batchSize * 2 * model.attentionHeads * lkv * model.headDim * e;
+}
+
+function decodeBytesPerToken(
+  model: ModelDefinition,
+  contextLength: number,
+  batchSize = 1
+) {
+  const slidingBytes = decodeLayerBytesPerToken(model, model.slidingWindow, batchSize);
+  const csaBytes = decodeLayerBytesPerToken(
+    model,
+    decodeCsaLkv(model, contextLength),
+    batchSize
+  );
+  const hcaBytes = decodeLayerBytesPerToken(
+    model,
+    decodeHcaLkv(model, contextLength),
+    batchSize
+  );
 
   return (
     model.slidingLayerCount * slidingBytes +
@@ -252,63 +331,117 @@ function computeFullResult(
     model.csaLayerCount * csaLayer.total +
     model.hcaLayerCount * hcaLayer.total;
   const weightGb = model.estimatedWeightsGb;
-  const cacheGb = bytesToGb(
-    decodeCacheBytes(model, platform.batchSize, workload.decodeContextLength)
+  const persistentSlidingCache = persistentSlidingCacheBytes(
+    model,
+    platform.batchSize
   );
-  const tmpPeakGb = bytesToGb(
-    decodeTmpPeakBytes(model, platform.batchSize, workload.decodeContextLength)
+  const persistentHcaCache = persistentHcaCacheBytes(
+    model,
+    platform.batchSize,
+    workload.decodeContextLength
+  );
+  const persistentCsaCache = persistentCsaCacheBytes(
+    model,
+    platform.batchSize,
+    workload.decodeContextLength
+  );
+  const persistentSlidingCacheTotal =
+    model.slidingLayerCount * persistentSlidingCache;
+  const persistentHcaCacheTotal = model.hcaLayerCount * persistentHcaCache;
+  const persistentCsaCacheTotal = model.csaLayerCount * persistentCsaCache;
+  const cacheBytes =
+    persistentSlidingCacheTotal + persistentHcaCacheTotal + persistentCsaCacheTotal;
+  const cacheGb = bytesToGb(cacheBytes);
+  const tmpPeakBytes = decodeTmpPeakBytes(
+    model,
+    platform.batchSize,
+    workload.decodeContextLength
+  );
+  const tmpPeakGb = bytesToGb(tmpPeakBytes);
+  const tmpPeakLkv = Math.max(
+    decodeCsaLkv(model, workload.decodeContextLength),
+    decodeHcaLkv(model, workload.decodeContextLength),
+    model.slidingWindow
   );
   const overheadGb = Math.max(4, weightGb * 0.03);
   const totalRuntimeMemoryGb = weightGb + cacheGb + tmpPeakGb + overheadGb;
   const memoryFitsCapacity = totalRuntimeMemoryGb <= platform.memoryCapacityGb;
   const effectiveCompute = toFlops(platform.computeThroughputTflops * platform.computeEfficiency);
-  const effectiveBandwidth = toTiBPerSecond(
-    platform.memoryBandwidthTbps * platform.bandwidthEfficiency
+  const effectiveBandwidth = gbpsToBytesPerSecond(
+    platform.memoryBandwidthGbps * platform.bandwidthEfficiency
   );
-  const prefillComputeTps = effectiveCompute / prefillFlops;
+  const prefillComputeTps = (effectiveCompute * sequenceLength) / prefillFlops;
   const prefillTrafficBytes =
     (weightGb * 1_000_000_000 + cacheGb * 1_000_000_000 * 0.1) * platform.batchSize;
-  const prefillBandwidthTps = effectiveBandwidth / prefillTrafficBytes;
-  const decodeBytes =
-    decodeBytesPerToken(model, workload.decodeContextLength) * platform.batchSize;
+  const prefillBandwidthTps = (effectiveBandwidth * sequenceLength) / prefillTrafficBytes;
+  const decodeSlidingLkv = model.slidingWindow;
+  const decodeCsaVisibleLength = decodeCsaLkv(model, workload.decodeContextLength);
+  const decodeHcaVisibleLength = decodeHcaLkv(model, workload.decodeContextLength);
+  const decodeSlidingBytesPerToken = decodeLayerBytesPerToken(
+    model,
+    decodeSlidingLkv,
+    platform.batchSize
+  );
+  const decodeCsaBytesPerToken = decodeLayerBytesPerToken(
+    model,
+    decodeCsaVisibleLength,
+    platform.batchSize
+  );
+  const decodeHcaBytesPerToken = decodeLayerBytesPerToken(
+    model,
+    decodeHcaVisibleLength,
+    platform.batchSize
+  );
+  const decodeCacheTrafficBytes = decodeBytesPerToken(
+    model,
+    workload.decodeContextLength,
+    platform.batchSize
+  );
+  const decodeWeightBytes = weightGb * 1_000_000_000;
+  const decodeBytes = decodeWeightBytes + decodeCacheTrafficBytes;
   const decodeComputeFlopsPerToken =
     (model.decoderLayers * model.hiddenSize * model.moeIntermediateSize * (model.activeExperts + 1)) /
     3;
   const decodeComputeTps = effectiveCompute / decodeComputeFlopsPerToken;
   const decodeBandwidthTps = effectiveBandwidth / decodeBytes;
-  const memoryClamp =
-    platform.useMemoryCeilingClamp && !memoryFitsCapacity
-      ? platform.memoryCapacityGb / totalRuntimeMemoryGb
-      : 1;
-  const prefillTps = Math.min(prefillComputeTps, prefillBandwidthTps) * memoryClamp;
-  const decodeTps = Math.min(decodeComputeTps, decodeBandwidthTps) * memoryClamp;
+  const prefillTps = Math.min(prefillComputeTps, prefillBandwidthTps);
+  const decodeTps = Math.min(decodeComputeTps, decodeBandwidthTps);
   const ttftMs = (sequenceLength / Math.max(prefillTps, 1e-6)) * 1000;
 
   return {
     prefillFlops,
     decodeBytes,
+    decodeCacheBytes: decodeCacheTrafficBytes,
+    decodeWeightBytes,
     weightGb,
     cacheGb,
+    persistentSlidingCacheBytes: persistentSlidingCache,
+    persistentHcaCacheBytes: persistentHcaCache,
+    persistentCsaCacheBytes: persistentCsaCache,
+    persistentSlidingCacheTotalBytes: persistentSlidingCacheTotal,
+    persistentHcaCacheTotalBytes: persistentHcaCacheTotal,
+    persistentCsaCacheTotalBytes: persistentCsaCacheTotal,
     tmpPeakGb,
+    tmpPeakBytes,
+    tmpPeakLkv,
     overheadGb,
     totalRuntimeMemoryGb,
     prefillComputeTps,
     prefillBandwidthTps,
     decodeComputeTps,
     decodeBandwidthTps,
+    decodeComputeFlopsPerToken,
+    decodeSlidingLkv,
+    decodeCsaLkv: decodeCsaVisibleLength,
+    decodeHcaLkv: decodeHcaVisibleLength,
+    decodeSlidingBytesPerToken,
+    decodeCsaBytesPerToken,
+    decodeHcaBytesPerToken,
     prefillTps,
     decodeTps,
     ttftMs,
-    prefillBottleneck: inferBottleneck(
-      prefillComputeTps,
-      prefillBandwidthTps,
-      memoryFitsCapacity
-    ),
-    decodeBottleneck: inferBottleneck(
-      decodeComputeTps,
-      decodeBandwidthTps,
-      memoryFitsCapacity
-    ),
+    prefillBottleneck: inferBottleneck(prefillComputeTps, prefillBandwidthTps),
+    decodeBottleneck: inferBottleneck(decodeComputeTps, decodeBandwidthTps),
     memoryFitsCapacity,
     slidingLayer,
     csaLayer,
@@ -392,9 +525,25 @@ function buildIntermediateMetrics(
     },
     {
       key: "decode_bandwidth_bytes",
-      label: "Decode Traffic Per Token",
+      label: "Decode Total Traffic Per Token",
       symbol: "B_decode",
       value: (result.decodeBytes / 1_000_000).toFixed(2),
+      unit: "MB/token",
+      source: "formula"
+    },
+    {
+      key: "decode_weight_bytes",
+      label: "Decode Weight Read Per Token",
+      symbol: "B_weights",
+      value: (result.decodeWeightBytes / 1_000_000).toFixed(2),
+      unit: "MB/token",
+      source: "formula"
+    },
+    {
+      key: "decode_cache_bytes",
+      label: "Decode Cache Traffic Per Token",
+      symbol: "B_cache",
+      value: (result.decodeCacheBytes / 1_000_000).toFixed(2),
       unit: "MB/token",
       source: "formula"
     },
@@ -445,12 +594,104 @@ function buildFormulaTrace(
         {
           label: "Q path FLOPs",
           expression: "2 * S * (D * r_q + r_q * n_h * c)",
-          evaluated: formatTflops(flopsQ(model, workload.prefillTokenLength))
+          evaluated: `${formatTflops(result.csaLayer.q)} per layer; all layers = ${formatTflops(
+            result.csaLayer.q * model.decoderLayers
+          )}`
+        },
+        {
+          label: "KV projection FLOPs",
+          expression: "2 * S * D * c",
+          evaluated: `${formatTflops(result.csaLayer.kvProj)} per layer; all layers = ${formatTflops(
+            result.csaLayer.kvProj * model.decoderLayers
+          )}`
+        },
+        {
+          label: "Sliding core attention FLOPs",
+          expression: "4 * S * sliding_window * n_h * c",
+          evaluated: formatLayerContribution(
+            result.slidingLayer,
+            model.slidingLayerCount,
+            "core"
+          )
+        },
+        {
+          label: "CSA core attention FLOPs",
+          expression: "4 * S * (sliding_window + index_topk) * n_h * c",
+          evaluated: formatLayerContribution(result.csaLayer, model.csaLayerCount, "core")
+        },
+        {
+          label: "HCA core attention FLOPs",
+          expression: "4 * S * (sliding_window + ceil(S / (2 * m_hca))) * n_h * c",
+          evaluated: formatLayerContribution(result.hcaLayer, model.hcaLayerCount, "core")
+        },
+        {
+          label: "CSA compressor FLOPs",
+          expression: "8 * S * D * c",
+          evaluated: formatLayerContribution(
+            result.csaLayer,
+            model.csaLayerCount,
+            "compressor"
+          )
+        },
+        {
+          label: "HCA compressor FLOPs",
+          expression: "4 * S * D * c",
+          evaluated: formatLayerContribution(
+            result.hcaLayer,
+            model.hcaLayerCount,
+            "compressor"
+          )
+        },
+        {
+          label: "CSA indexer linear FLOPs",
+          expression: "S * (8*D*c_I + 2*r_q*n_h_I*c_I + 2*D*n_h_I)",
+          evaluated: formatLayerContribution(
+            result.csaLayer,
+            model.csaLayerCount,
+            "indexerLin"
+          )
         },
         {
           label: "CSA indexer attn FLOPs",
           expression: "S^2 * n_h^I * c^I / m_csa",
-          evaluated: formatTflops(flopsIndexerAttn(model, workload.prefillTokenLength))
+          evaluated: formatLayerContribution(
+            result.csaLayer,
+            model.csaLayerCount,
+            "indexerAttn"
+          )
+        },
+        {
+          label: "Output path FLOPs",
+          expression: "2 * S * (n_h*c*r_o + o_groups*r_o*D)",
+          evaluated: `${formatTflops(result.csaLayer.output)} per layer; all layers = ${formatTflops(
+            result.csaLayer.output * model.decoderLayers
+          )}`
+        },
+        {
+          label: "MoE FLOPs",
+          expression: "6 * S * D * I * (k + 1)",
+          evaluated: `${formatTflops(result.csaLayer.moe)} per layer; all layers = ${formatTflops(
+            result.csaLayer.moe * model.decoderLayers
+          )}`
+        },
+        {
+          label: "Sliding layer total",
+          expression: "F_Q + F_KV + F_core + F_O + F_MoE",
+          evaluated: formatLayerContribution(
+            result.slidingLayer,
+            model.slidingLayerCount,
+            "total"
+          )
+        },
+        {
+          label: "CSA layer total",
+          expression: "F_Q + F_KV + F_core + F_compressor + F_indexer + F_O + F_MoE",
+          evaluated: formatLayerContribution(result.csaLayer, model.csaLayerCount, "total")
+        },
+        {
+          label: "HCA layer total",
+          expression: "F_Q + F_KV + F_core + F_compressor + F_O + F_MoE",
+          evaluated: formatLayerContribution(result.hcaLayer, model.hcaLayerCount, "total")
         },
         {
           label: "Total Prefill FLOPs",
@@ -463,6 +704,64 @@ function buildFormulaTrace(
       category: "decode",
       rows: [
         {
+          label: "Decode sliding visible length",
+          expression: "L_kv_decode(sliding) = sliding_window",
+          evaluated: `${result.decodeSlidingLkv} tokens`
+        },
+        {
+          label: "Decode CSA visible length",
+          expression: "L_kv_decode(CSA) = sliding_window + min(index_topk, floor(S_ctx / m_csa))",
+          evaluated: `${model.slidingWindow} + min(${model.indexTopk}, floor(${workload.decodeContextLength} / ${model.csaCompressRate})) = ${result.decodeCsaLkv} tokens`
+        },
+        {
+          label: "Decode HCA visible length",
+          expression: "L_kv_decode(HCA) = sliding_window + floor(S_ctx / m_hca)",
+          evaluated: `${model.slidingWindow} + floor(${workload.decodeContextLength} / ${model.hcaCompressRate}) = ${result.decodeHcaLkv} tokens`
+        },
+        {
+          label: "Sliding bytes per token",
+          expression: "B * 2 * n_h * L_kv * c * bytes_per_elem",
+          evaluated: `${formatMb(result.decodeSlidingBytesPerToken)} x ${model.slidingLayerCount} layers = ${formatMb(
+            result.decodeSlidingBytesPerToken * model.slidingLayerCount
+          )}`
+        },
+        {
+          label: "CSA bytes per token",
+          expression: "B * 2 * n_h * L_kv(CSA) * c * bytes_per_elem",
+          evaluated: `${formatMb(result.decodeCsaBytesPerToken)} x ${model.csaLayerCount} layers = ${formatMb(
+            result.decodeCsaBytesPerToken * model.csaLayerCount
+          )}`
+        },
+        {
+          label: "HCA bytes per token",
+          expression: "B * 2 * n_h * L_kv(HCA) * c * bytes_per_elem",
+          evaluated: `${formatMb(result.decodeHcaBytesPerToken)} x ${model.hcaLayerCount} layers = ${formatMb(
+            result.decodeHcaBytesPerToken * model.hcaLayerCount
+          )}`
+        },
+        {
+          label: "Decode cache bytes per token",
+          expression: "N_sliding*B_sliding + N_csa*B_csa + N_hca*B_hca",
+          evaluated: formatMb(result.decodeCacheBytes)
+        },
+        {
+          label: "Decode weight bytes per token",
+          expression: "B_weights ~= M_weights",
+          evaluated: formatMb(result.decodeWeightBytes)
+        },
+        {
+          label: "Total decode bytes per token",
+          expression: "B_decode = B_weights + B_cache",
+          evaluated: `${formatMb(result.decodeWeightBytes)} + ${formatMb(
+            result.decodeCacheBytes
+          )} = ${formatMb(result.decodeBytes)}`
+        },
+        {
+          label: "Decode compute FLOPs per token",
+          expression: "L * D * I * (k + 1) / 3",
+          evaluated: formatGflops(result.decodeComputeFlopsPerToken)
+        },
+        {
           label: "Decode compute ceiling",
           expression: "effective_compute / FLOPs_per_token",
           evaluated: `${result.decodeComputeTps.toFixed(2)} tokens/s`
@@ -471,12 +770,65 @@ function buildFormulaTrace(
           label: "Decode bandwidth ceiling",
           expression: "effective_bandwidth / bytes_per_token",
           evaluated: `${result.decodeBandwidthTps.toFixed(2)} tokens/s`
+        },
+        {
+          label: "Raw Decode TPS",
+          expression: "min(decode_compute_ceiling, decode_bandwidth_ceiling)",
+          evaluated: `${Math.min(result.decodeComputeTps, result.decodeBandwidthTps).toFixed(
+            2
+          )} tokens/s`
+        },
+        {
+          label: "Effective Decode TPS",
+          expression: "min(decode_compute_ceiling, decode_bandwidth_ceiling)",
+          evaluated: `${result.decodeTps.toFixed(2)} tokens/s`
         }
       ]
     },
     {
       category: "memory",
       rows: [
+        {
+          label: "Weight memory",
+          expression: "M_weights ~= quantized resident model weights",
+          evaluated: `${result.weightGb.toFixed(2)} GB`
+        },
+        {
+          label: "Persistent sliding cache",
+          expression: "B * e * (sliding_window - 1) * c",
+          evaluated: `${formatMb(result.persistentSlidingCacheBytes)} x ${model.slidingLayerCount} layers = ${formatMb(
+            result.persistentSlidingCacheTotalBytes
+          )}`
+        },
+        {
+          label: "Persistent HCA cache",
+          expression: "B * e * [(n_win-1)*c + floor(S_ctx/m_hca)*c + 2*(S_ctx mod m_hca)*c]",
+          evaluated: `${formatMb(result.persistentHcaCacheBytes)} x ${model.hcaLayerCount} layers = ${formatMb(
+            result.persistentHcaCacheTotalBytes
+          )}`
+        },
+        {
+          label: "Persistent CSA cache",
+          expression: "B * e * [(n_win-1)*c + floor(S_ctx/m_csa)*(c+c_I) + 4*(S_ctx mod m_csa)*(c+c_I) + 2*m_csa*(c+c_I)]",
+          evaluated: `${formatMb(result.persistentCsaCacheBytes)} x ${model.csaLayerCount} layers = ${formatMb(
+            result.persistentCsaCacheTotalBytes
+          )}`
+        },
+        {
+          label: "Persistent Decode Cache",
+          expression: "M_decode_cache = M_sliding + M_hca + M_csa",
+          evaluated: `${result.cacheGb.toFixed(3)} GB`
+        },
+        {
+          label: "Single-step Temp Peak",
+          expression: "M_tmp_peak = B * e * 2 * n_h * max(L_kv_decode) * c",
+          evaluated: `${formatMb(result.tmpPeakBytes)}; max L_kv = ${result.tmpPeakLkv}`
+        },
+        {
+          label: "Runtime overhead",
+          expression: "M_runtime_overhead = max(4 GB, M_weights * 0.03)",
+          evaluated: `${result.overheadGb.toFixed(2)} GB`
+        },
         {
           label: "Decode base memory",
           expression: "M_weights + M_decode_cache",
@@ -497,6 +849,10 @@ export function calculatePerformanceResult(
   platform: PlatformInput,
   workload: WorkloadInput
 ): PerformanceResult {
+  if (model.formulaStrategyId !== "deepseek-v4-compressed-moe") {
+    throw new Error(`Unsupported formula strategy: ${model.formulaStrategyId}`);
+  }
+
   const tokenSweepSeries: TokenSweepPoint[] = [];
 
   for (

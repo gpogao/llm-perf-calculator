@@ -10,6 +10,7 @@
 
 - 设计文档目录：`docs/app/design/`
 - 主 spec：`docs/app/design/app-design-spec.md`
+- 架构设计：`docs/app/design/architecture-design.md`
 - 设计效果图目录：`docs/app/design/images/`
 - 效果图文件命名建议：
   - `performance-calculator-v1.png`
@@ -17,8 +18,12 @@
   - `formula-notes-v1.png`
 - 当前已生成效果图：
   - `docs/app/design/images/performance-calculator-v1.png`
+  - `docs/app/design/images/model-structure-v1.png`
+  - `docs/app/design/images/formula-notes-v1.png`
 - 当前已创建分页设计文档：
   - `docs/app/design/pages/performance-calculator.md`
+  - `docs/app/design/pages/model-structure.md`
+  - `docs/app/design/pages/formula-notes.md`
 - 后续如继续拆分页设计文档，建议放在：
   - `docs/app/design/pages/performance-calculator.md`
   - `docs/app/design/pages/model-structure.md`
@@ -137,7 +142,7 @@
 平台参数至少包含：
 
 - `computeThroughputTflops`
-- `memoryBandwidthTbps`
+- `memoryBandwidthGbps`
 - `memoryCapacityGb`
 - `computeEfficiency`
 - `bandwidthEfficiency`
@@ -395,7 +400,7 @@
 内容：
 
 - `Compute Throughput (TFLOPS)`
-- `Memory Bandwidth (TB/s)`
+- `Memory Bandwidth (GB/s)`
 - `HBM / VRAM Capacity (GB)`
 - 平台模板下拉
   - 首版可先提供 `Custom`
@@ -408,9 +413,9 @@
 - `Batch Size`
 - `Compute Efficiency`
 - `Bandwidth Efficiency`
-- `Use Memory Ceiling Clamp` 开关
 - `Show Intermediate Metrics` 开关
 - `Show Formula Trace` 开关
+- 当估算内存超过容量时显示红色内存不足提示，不改变性能计算结果
 
 #### 参数区底部操作条
 

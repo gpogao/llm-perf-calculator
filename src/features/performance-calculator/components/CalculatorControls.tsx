@@ -1,7 +1,7 @@
 import type { ModelDefinition, ModelId } from "../../../domain/model/types";
 import type { PlatformInput } from "../../../domain/platform/types";
 import type { WorkloadInput } from "../../../domain/workload/types";
-import { modelRegistry } from "../../../engines/model-registry";
+import type { ModelFamilyOption } from "../../../engines/model-registry";
 import type {
   CalculatorValidation,
   CalculatorViewState
@@ -9,11 +9,15 @@ import type {
 
 type Props = {
   modelId: ModelId;
+  selectedFamily: string;
+  availableFamilies: ModelFamilyOption[];
+  availableModels: ModelDefinition[];
   selectedModel: ModelDefinition;
   platform: PlatformInput;
   workload: WorkloadInput;
   view: CalculatorViewState;
   validationErrors: CalculatorValidation;
+  onModelFamilyChange: (family: string) => void;
   onModelIdChange: (modelId: ModelId) => void;
   onPlatformChange: <K extends keyof PlatformInput>(key: K, value: PlatformInput[K]) => void;
   onWorkloadChange: <K extends keyof WorkloadInput>(key: K, value: WorkloadInput[K]) => void;
@@ -41,11 +45,15 @@ function FieldError({ message }: { message?: string }) {
 
 export function CalculatorControls({
   modelId,
+  selectedFamily,
+  availableFamilies,
+  availableModels,
   selectedModel,
   platform,
   workload,
   view,
   validationErrors,
+  onModelFamilyChange,
   onModelIdChange,
   onPlatformChange,
   onWorkloadChange,
@@ -61,12 +69,25 @@ export function CalculatorControls({
         <article className="panel">
           <h3>模型选择</h3>
           <label className="field">
+            <span>模型家族</span>
+            <select
+              value={selectedFamily}
+              onChange={(event) => onModelFamilyChange(event.target.value)}
+            >
+              {availableFamilies.map((family) => (
+                <option key={family.id} value={family.id}>
+                  {family.displayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
             <span>模型</span>
             <select
               value={modelId}
               onChange={(event) => onModelIdChange(event.target.value as ModelId)}
             >
-              {modelRegistry.map((model) => (
+              {availableModels.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.displayName}
                 </option>
@@ -192,16 +213,16 @@ export function CalculatorControls({
               <FieldError message={validationErrors.computeThroughputTflops} />
             </label>
             <label className="field">
-              <span>Memory Bandwidth (TB/s)</span>
+              <span>Memory Bandwidth (GB/s)</span>
               <input
                 type="number"
-                step="0.01"
-                value={platform.memoryBandwidthTbps}
+                step="1"
+                value={platform.memoryBandwidthGbps}
                 onChange={(event) =>
-                  onPlatformChange("memoryBandwidthTbps", numberValue(event.target.value))
+                  onPlatformChange("memoryBandwidthGbps", numberValue(event.target.value))
                 }
               />
-              <FieldError message={validationErrors.memoryBandwidthTbps} />
+              <FieldError message={validationErrors.memoryBandwidthGbps} />
             </label>
             <label className="field">
               <span>HBM / VRAM Capacity (GB)</span>
@@ -265,22 +286,17 @@ export function CalculatorControls({
             <label className="field field--checkbox">
               <input
                 type="checkbox"
-                checked={platform.useMemoryCeilingClamp}
-                onChange={(event) =>
-                  onPlatformChange("useMemoryCeilingClamp", event.target.checked)
-                }
-              />
-              <span>Use Memory Ceiling Clamp</span>
-            </label>
-            <label className="field field--checkbox">
-              <input
-                type="checkbox"
                 checked={view.showIntermediateMetrics}
                 onChange={(event) =>
                   onViewChange("showIntermediateMetrics", event.target.checked)
                 }
               />
-              <span>Show Intermediate Metrics</span>
+              <span className="field--checkbox__content">
+                <span>Show Intermediate Metrics</span>
+                <small>
+                  显示 FLOPs、带宽、cache、权重显存等中间量，便于核对计算来源。
+                </small>
+              </span>
             </label>
             <label className="field field--checkbox">
               <input
@@ -288,7 +304,12 @@ export function CalculatorControls({
                 checked={view.showFormulaTrace}
                 onChange={(event) => onViewChange("showFormulaTrace", event.target.checked)}
               />
-              <span>Show Formula Trace</span>
+              <span className="field--checkbox__content">
+                <span>Show Formula Trace</span>
+                <small>
+                  显示本次结果使用的公式分解和代入值，便于追溯 Prefill、Decode 与内存计算。
+                </small>
+              </span>
             </label>
           </div>
         </article>
@@ -308,4 +329,3 @@ export function CalculatorControls({
     </div>
   );
 }
-

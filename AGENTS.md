@@ -15,6 +15,13 @@
 - `DeepSeek-V4-Flash`
 - `DeepSeek-V4-Pro`
 
+模型选择采用两段式：
+
+- 先选 `family`
+- 再在该 `family` 下选具体模型
+
+当前 `DeepSeek V4` family 下的可选模型由模型注册表统一提供，不要在页面里手写模型列表。
+
 交付形态同时覆盖：
 
 - 浏览器应用
@@ -31,6 +38,7 @@
 设计与产品约定以以下文档为准：
 
 - 主设计文档：[docs/app/design/app-design-spec.md](docs/app/design/app-design-spec.md)
+- 架构设计文档：[docs/app/design/architecture-design.md](docs/app/design/architecture-design.md)
 - 性能计算页分页设计：[docs/app/design/pages/performance-calculator.md](docs/app/design/pages/performance-calculator.md)
 
 如讨论结果影响页面结构、交互、术语、结果字段或目录职责，应同步更新这些文档。
@@ -55,6 +63,7 @@
 - `src/pages/`
   - 页面级装配层。
   - 页面负责组合 feature，不直接承载复杂公式逻辑。
+  - 性能计算页、模型结构页、公式说明页共享同一套计算状态，不要各自维护独立输入副本。
 
 - `src/features/`
   - 面向页面的业务模块。
@@ -69,6 +78,8 @@
 - `src/engines/`
   - 纯计算与策略层。
   - 包括模型注册、公式策略、性能估算逻辑。
+  - 模型 family 和模型项统一从 `src/engines/model-registry/` 提供。
+  - 不同架构的公式口径通过 `formulaStrategyId` 区分，不要把 DeepSeek V4 公式直接套到其他模型上。
 
 - `data/models/`
   - 模型静态定义和结构化数据。
@@ -89,6 +100,7 @@
 - 新公式应优先通过 `src/engines/formula-strategies/` 扩展。
 - `src/engines/` 不应依赖 `src/pages/` 或 `src/features/`。
 - 页面层只消费统一结果对象，不直接耦合底层公式细节。
+- 共享状态优先放在 `src/features/performance-calculator/state/`，由 `CalculatorProvider` 向多个页面提供一致的模型、输入、平台参数和计算假设。
 
 ## 实现原则
 
@@ -97,6 +109,7 @@
 
 - 优先保证模型扩展性。
   - 不能把 `DeepSeek V4` 写死成唯一支持对象。
+  - 新增 family 时，先补模型注册表，再补对应公式策略，最后再让页面按 `architectureKind` 条件展示结构内容。
 
 - 优先保证 Web / Desktop 统一体验。
   - 不要引入只能在浏览器站点式场景成立的核心交互假设。
@@ -137,3 +150,4 @@
 - 页面是否仍然符合高密度工程工具定位。
 - 设计文档是否需要同步更新。
 - 新增模型或平台预设是否已进入结构化数据目录。
+- 新增模型后，是否已经更新 family/model 两段式选择和相关文档。

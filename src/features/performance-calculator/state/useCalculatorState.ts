@@ -7,7 +7,11 @@ import type {
 } from "../../../domain/performance/types";
 import type { PlatformInput } from "../../../domain/platform/types";
 import type { WorkloadInput } from "../../../domain/workload/types";
-import { getModelDefinition } from "../../../engines/model-registry";
+import {
+  getModelDefinition,
+  getModelFamilies,
+  getModelsByFamily
+} from "../../../engines/model-registry";
 import { calculatePerformanceResult } from "../services/performanceCalculator";
 
 export type CalculatorViewState = {
@@ -30,14 +34,13 @@ export type CalculatorValidation = Record<string, string>;
 const defaultState: CalculatorState = {
   modelId: "deepseek-v4-flash",
   platform: {
-    computeThroughputTflops: 1000,
-    memoryBandwidthTbps: 3.35,
-    memoryCapacityGb: 192,
-    computeEfficiency: 0.7,
-    bandwidthEfficiency: 0.75,
+    computeThroughputTflops: 124,
+    memoryBandwidthGbps: 273,
+    memoryCapacityGb: 256,
+    computeEfficiency: 0.4,
+    bandwidthEfficiency: 0.6,
     batchSize: 1,
-    precisionAssumptions: "FP8 weights + BF16 activations + FP4 experts",
-    useMemoryCeilingClamp: true
+    precisionAssumptions: "FP8 weights + BF16 activations + FP4 experts"
   },
   workload: {
     prefillTokenLength: 131072,
@@ -64,8 +67,8 @@ function validateState(state: CalculatorState): CalculatorValidation {
     errors.computeThroughputTflops = "需大于 0";
   }
 
-  if (state.platform.memoryBandwidthTbps <= 0) {
-    errors.memoryBandwidthTbps = "需大于 0";
+  if (state.platform.memoryBandwidthGbps <= 0) {
+    errors.memoryBandwidthGbps = "需大于 0";
   }
 
   if (state.platform.memoryCapacityGb <= 0) {
@@ -106,10 +109,26 @@ export function useCalculatorState() {
   const validationErrors = useMemo(() => validateState(state), [state]);
 
   const selectedModel = useMemo(() => getModelDefinition(state.modelId), [state.modelId]);
+  const availableFamilies = useMemo(() => getModelFamilies(), []);
+  const selectedFamily = selectedModel.family;
+  const availableModels = useMemo(
+    () => getModelsByFamily(selectedFamily),
+    [selectedFamily]
+  );
 
   function updateModelId(modelId: ModelId) {
     setState((current) => ({ ...current, modelId }));
     setStatus("ready");
+  }
+
+  function updateModelFamily(family: string) {
+    const [firstModel] = getModelsByFamily(family);
+
+    if (!firstModel) {
+      return;
+    }
+
+    updateModelId(firstModel.id);
   }
 
   function updatePlatform<K extends keyof PlatformInput>(key: K, value: PlatformInput[K]) {
@@ -185,7 +204,11 @@ export function useCalculatorState() {
     result,
     status,
     selectedModel,
+    selectedFamily,
+    availableFamilies,
+    availableModels,
     validationErrors,
+    updateModelFamily,
     updateModelId,
     updatePlatform,
     updateWorkload,

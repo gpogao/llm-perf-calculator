@@ -5,7 +5,7 @@ import { IntermediateMetricsTable } from "../../features/performance-calculator/
 import { MemoryBreakdownCard } from "../../features/performance-calculator/components/MemoryBreakdownCard";
 import { MetricCards } from "../../features/performance-calculator/components/MetricCards";
 import { TrendChart } from "../../features/performance-calculator/components/TrendChart";
-import { useCalculatorState } from "../../features/performance-calculator/state/useCalculatorState";
+import { useCalculatorContext } from "../../features/performance-calculator/state/CalculatorProvider";
 
 export function PerformanceCalculatorPage() {
   const {
@@ -13,7 +13,11 @@ export function PerformanceCalculatorPage() {
     result,
     status,
     selectedModel,
+    selectedFamily,
+    availableFamilies,
+    availableModels,
     validationErrors,
+    updateModelFamily,
     updateModelId,
     updatePlatform,
     updateWorkload,
@@ -21,7 +25,7 @@ export function PerformanceCalculatorPage() {
     applyQuickRange,
     reset,
     calculate
-  } = useCalculatorState();
+  } = useCalculatorContext();
 
   if (!result) {
     return null;
@@ -50,11 +54,15 @@ export function PerformanceCalculatorPage() {
 
       <CalculatorControls
         modelId={state.modelId}
+        selectedFamily={selectedFamily}
+        availableFamilies={availableFamilies}
+        availableModels={availableModels}
         selectedModel={selectedModel}
         platform={state.platform}
         workload={state.workload}
         view={state.view}
         validationErrors={validationErrors}
+        onModelFamilyChange={updateModelFamily}
         onModelIdChange={updateModelId}
         onPlatformChange={updatePlatform}
         onWorkloadChange={updateWorkload}

@@ -52,23 +52,24 @@ type SelectedModelState = {
 ```ts
 type PlatformInputState = {
   computeThroughputTflops: number | null;
-  memoryBandwidthTbps: number | null;
+  memoryBandwidthGbps: number | null;
   memoryCapacityGb: number | null;
   computeEfficiency: number;
   bandwidthEfficiency: number;
   batchSize: number;
   precisionAssumptions: string;
-  useMemoryCeilingClamp: boolean;
 };
 ```
 
 默认值建议：
 
-- `computeEfficiency = 0.7`
-- `bandwidthEfficiency = 0.75`
+- `computeThroughputTflops = 124`
+- `memoryBandwidthGbps = 273`
+- `memoryCapacityGb = 256`
+- `computeEfficiency = 0.4`
+- `bandwidthEfficiency = 0.6`
 - `batchSize = 1`
 - `precisionAssumptions = "FP8 weights + BF16 activations + FP4 experts"`
-- `useMemoryCeilingClamp = true`
 
 ### 3.3 Workload Input State
 
@@ -174,7 +175,7 @@ type PerformanceResultState = {
 ```
 
 ```ts
-type BottleneckType = "compute-bound" | "bandwidth-bound" | "memory-cap-limited";
+type BottleneckType = "compute-bound" | "bandwidth-bound";
 ```
 
 ```ts
@@ -313,7 +314,7 @@ type TokenSweepSeriesPoint = {
 字段：
 
 - `Compute Throughput (TFLOPS)`
-- `Memory Bandwidth (TB/s)`
+- `Memory Bandwidth (GB/s)`
 - `HBM / VRAM Capacity (GB)`
 - `Platform Template`
 
@@ -329,7 +330,6 @@ type TokenSweepSeriesPoint = {
 - `Batch Size`
 - `Compute Efficiency`
 - `Bandwidth Efficiency`
-- `Use Memory Ceiling Clamp`
 - `Show Intermediate Metrics`
 - `Show Formula Trace`
 
@@ -337,7 +337,7 @@ type TokenSweepSeriesPoint = {
 
 - `Show Intermediate Metrics` 控制中间量表的展示，不影响计算
 - `Show Formula Trace` 控制公式追踪卡的展示，不影响计算
-- `Use Memory Ceiling Clamp` 会影响最终 `Prefill TPS` / `Decode TPS`
+- 当 `Total Runtime Memory > HBM / VRAM Capacity` 时，页面以红字提示内存不足，不再对 `Prefill TPS` / `Decode TPS` 施加惩罚系数
 
 ### 参数区底部操作条
 

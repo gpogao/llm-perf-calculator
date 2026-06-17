@@ -1,7 +1,6 @@
 export type BottleneckType =
   | "compute-bound"
-  | "bandwidth-bound"
-  | "memory-cap-limited";
+  | "bandwidth-bound";
 
 export type TrendMetricKey =
   | "prefillTps"

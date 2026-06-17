@@ -20,26 +20,83 @@ const metricOptions: { key: TrendMetricKey; label: string }[] = [
   { key: "totalRuntimeMemoryGb", label: "Total Runtime Memory" }
 ];
 
-function buildPath(
-  values: number[],
-  width: number,
-  height: number,
-  padding: number
-) {
-  const maxValue = Math.max(...values);
+function formatTokenLength(value: number) {
+  if (value >= 1024 * 1024) {
+    return `${(value / 1024 / 1024).toFixed(value % (1024 * 1024) === 0 ? 0 : 1)}M`;
+  }
+
+  if (value >= 1024) {
+    return `${(value / 1024).toFixed(value % 1024 === 0 ? 0 : 1)}K`;
+  }
+
+  return String(value);
+}
+
+function formatMetricValue(metric: TrendMetricKey, value: number) {
+  if (metric === "ttftMs") {
+    return `${(value / 1000).toFixed(2)} s`;
+  }
+
+  if (metric === "totalRuntimeMemoryGb") {
+    return `${value.toFixed(2)} GB`;
+  }
+
+  return `${value.toFixed(2)} tokens/s`;
+}
+
+function formatAxisTick(metric: TrendMetricKey, value: number) {
+  if (metric === "ttftMs") {
+    return (value / 1000).toFixed(1);
+  }
+
+  if (metric === "totalRuntimeMemoryGb") {
+    return value.toFixed(1);
+  }
+
+  return value.toFixed(0);
+}
+
+function getMetricUnit(metric: TrendMetricKey) {
+  if (metric === "ttftMs") {
+    return "s";
+  }
+
+  if (metric === "totalRuntimeMemoryGb") {
+    return "GB";
+  }
+
+  return "tokens/s";
+}
+
+function getMetricLabel(metric: TrendMetricKey) {
+  return metricOptions.find((option) => option.key === metric)?.label ?? metric;
+}
+
+function getYDomain(values: number[]) {
   const minValue = Math.min(...values);
-  const xStep = values.length > 1 ? (width - padding * 2) / (values.length - 1) : 0;
-  const normalizedRange = maxValue - minValue || 1;
+  const maxValue = Math.max(...values);
 
-  return values
-    .map((value, index) => {
-      const x = padding + xStep * index;
-      const y =
-        height - padding - ((value - minValue) / normalizedRange) * (height - padding * 2);
+  if (minValue === maxValue) {
+    const pad = Math.max(Math.abs(minValue) * 0.1, 1);
+    return [minValue - pad, maxValue + pad] as const;
+  }
 
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
+  const pad = (maxValue - minValue) * 0.08;
+  return [Math.max(0, minValue - pad), maxValue + pad] as const;
+}
+
+function buildPath(points: { x: number; y: number }[]) {
+  return points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
     .join(" ");
+}
+
+function makeTicks(min: number, max: number, count: number) {
+  if (count <= 1) {
+    return [min];
+  }
+
+  return Array.from({ length: count }, (_, index) => min + ((max - min) * index) / (count - 1));
 }
 
 export function TrendChart({
@@ -53,19 +110,47 @@ export function TrendChart({
 }: Props) {
   const width = 760;
   const height = 260;
-  const padding = 24;
+  const plot = {
+    left: 72,
+    right: 24,
+    top: 20,
+    bottom: 48
+  };
+  const plotWidth = width - plot.left - plot.right;
+  const plotHeight = height - plot.top - plot.bottom;
   const primaryValues = points.map((point) => point[selectedMetric]);
   const secondaryKey = selectedMetric === "prefillTps" ? "decodeTps" : "prefillTps";
   const secondaryValues =
     selectedMetric === "ttftMs" || selectedMetric === "totalRuntimeMemoryGb"
       ? []
       : points.map((point) => point[secondaryKey]);
-  const primaryPath = buildPath(primaryValues, width, height, padding);
-  const secondaryPath =
+  const allYValues = [...primaryValues, ...secondaryValues];
+  const [yMin, yMax] = getYDomain(allYValues.length > 0 ? allYValues : [0]);
+  const xMin = points[0]?.tokenLength ?? 0;
+  const xMax = points[points.length - 1]?.tokenLength ?? xMin + 1;
+  const xRange = Math.max(xMax - xMin, 1);
+  const yRange = Math.max(yMax - yMin, 1);
+  const xScale = (tokenLength: number) =>
+    plot.left + ((tokenLength - xMin) / xRange) * plotWidth;
+  const yScale = (value: number) =>
+    plot.top + plotHeight - ((value - yMin) / yRange) * plotHeight;
+  const primaryPlotPoints = points.map((point) => ({
+    x: xScale(point.tokenLength),
+    y: yScale(point[selectedMetric])
+  }));
+  const secondaryPlotPoints =
     secondaryValues.length > 0
-      ? buildPath(secondaryValues, width, height, padding)
-      : null;
+      ? points.map((point) => ({
+          x: xScale(point.tokenLength),
+          y: yScale(point[secondaryKey])
+        }))
+      : [];
+  const primaryPath = buildPath(primaryPlotPoints);
+  const secondaryPath =
+    secondaryPlotPoints.length > 0 ? buildPath(secondaryPlotPoints) : null;
   const lastPoint = points.length > 0 ? points[points.length - 1] : undefined;
+  const xTicks = makeTicks(xMin, xMax, 5);
+  const yTicks = makeTicks(yMin, yMax, 5);
 
   return (
     <article className="panel panel--large">
@@ -109,41 +194,133 @@ export function TrendChart({
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Token sweep chart">
           {showBottleneckBackground && (
             <>
-              <rect x="0" y="0" width={width / 2} height={height} fill="rgba(37, 99, 235, 0.05)" />
               <rect
-                x={width / 2}
-                y="0"
-                width={width / 2}
-                height={height}
+                x={plot.left}
+                y={plot.top}
+                width={plotWidth / 2}
+                height={plotHeight}
+                fill="rgba(37, 99, 235, 0.05)"
+              />
+              <rect
+                x={plot.left + plotWidth / 2}
+                y={plot.top}
+                width={plotWidth / 2}
+                height={plotHeight}
                 fill="rgba(14, 116, 144, 0.05)"
               />
             </>
           )}
+          {yTicks.map((tick) => {
+            const y = yScale(tick);
+
+            return (
+              <g key={`y-${tick}`}>
+                <line
+                  x1={plot.left}
+                  x2={plot.left + plotWidth}
+                  y1={y}
+                  y2={y}
+                  stroke="rgba(15, 23, 42, 0.08)"
+                />
+                <text x={plot.left - 10} y={y + 4} textAnchor="end" className="chart-axis-text">
+                  {formatAxisTick(selectedMetric, tick)}
+                </text>
+              </g>
+            );
+          })}
+          {xTicks.map((tick) => {
+            const x = xScale(tick);
+
+            return (
+              <g key={`x-${tick}`}>
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={plot.top}
+                  y2={plot.top + plotHeight}
+                  stroke="rgba(15, 23, 42, 0.05)"
+                />
+                <text
+                  x={x}
+                  y={plot.top + plotHeight + 24}
+                  textAnchor="middle"
+                  className="chart-axis-text"
+                >
+                  {formatTokenLength(tick)}
+                </text>
+              </g>
+            );
+          })}
+          <line
+            x1={plot.left}
+            x2={plot.left}
+            y1={plot.top}
+            y2={plot.top + plotHeight}
+            stroke="rgba(15, 23, 42, 0.36)"
+          />
+          <line
+            x1={plot.left}
+            x2={plot.left + plotWidth}
+            y1={plot.top + plotHeight}
+            y2={plot.top + plotHeight}
+            stroke="rgba(15, 23, 42, 0.36)"
+          />
+          <text
+            x={plot.left + plotWidth / 2}
+            y={height - 6}
+            textAnchor="middle"
+            className="chart-axis-label"
+          >
+            Token Length (tokens)
+          </text>
+          <text
+            x={14}
+            y={plot.top + plotHeight / 2}
+            textAnchor="middle"
+            className="chart-axis-label"
+            transform={`rotate(-90 14 ${plot.top + plotHeight / 2})`}
+          >
+            {getMetricLabel(selectedMetric)} ({getMetricUnit(selectedMetric)})
+          </text>
           <path d={primaryPath} fill="none" stroke="#2563eb" strokeWidth="3" />
           {secondaryPath ? (
             <path d={secondaryPath} fill="none" stroke="#0f766e" strokeWidth="2" />
           ) : null}
           {showDataPoints &&
-            points.map((point, index) => {
-              const maxValue = Math.max(...primaryValues);
-              const minValue = Math.min(...primaryValues);
-              const x =
-                padding +
-                ((width - padding * 2) / Math.max(points.length - 1, 1)) * index;
-              const y =
-                height -
-                padding -
-                (((point[selectedMetric] as number) - minValue) /
-                  Math.max(maxValue - minValue, 1)) *
-                  (height - padding * 2);
+            points.map((point) => {
+              const x = xScale(point.tokenLength);
+              const y = yScale(point[selectedMetric]);
 
-              return <circle key={point.tokenLength} cx={x} cy={y} r="3.5" fill="#1d4ed8" />;
+              return (
+                <g key={point.tokenLength} className="chart-point">
+                  <circle cx={x} cy={y} r="4" fill="#1d4ed8" />
+                  <circle cx={x} cy={y} r="10" fill="transparent" />
+                  <title>
+                    {`Token Length: ${point.tokenLength.toLocaleString()}
+${getMetricLabel(selectedMetric)}: ${formatMetricValue(selectedMetric, point[selectedMetric])}
+Prefill TPS: ${formatMetricValue("prefillTps", point.prefillTps)}
+Decode TPS: ${formatMetricValue("decodeTps", point.decodeTps)}
+TTFT: ${formatMetricValue("ttftMs", point.ttftMs)}
+Memory: ${formatMetricValue("totalRuntimeMemoryGb", point.totalRuntimeMemoryGb)}
+Prefill Bottleneck: ${point.prefillBottleneck}
+Decode Bottleneck: ${point.decodeBottleneck}`}
+                  </title>
+                </g>
+              );
             })}
         </svg>
       </div>
       <div className="trend-footer">
-        <span>Range: {points[0]?.tokenLength ?? 0} - {lastPoint?.tokenLength ?? 0}</span>
+        <span>Range: {formatTokenLength(points[0]?.tokenLength ?? 0)} - {formatTokenLength(lastPoint?.tokenLength ?? 0)}</span>
         <span>Points: {points.length}</span>
+        <span className="chart-legend">
+          <i className="chart-legend__primary" /> {getMetricLabel(selectedMetric)}
+          {secondaryPath ? (
+            <>
+              <i className="chart-legend__secondary" /> {getMetricLabel(secondaryKey)}
+            </>
+          ) : null}
+        </span>
       </div>
     </article>
   );

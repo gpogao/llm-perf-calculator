@@ -1,11 +1,9 @@
 export type PlatformInput = {
   computeThroughputTflops: number;
-  memoryBandwidthTbps: number;
+  memoryBandwidthGbps: number;
   memoryCapacityGb: number;
   computeEfficiency: number;
   bandwidthEfficiency: number;
   batchSize: number;
   precisionAssumptions: string;
-  useMemoryCeilingClamp: boolean;
 };
-
