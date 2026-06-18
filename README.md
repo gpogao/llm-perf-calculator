@@ -1,1 +1,178 @@
-# llm-perf-calculator
+# LLM Perf Calculator
+
+大语言模型（LLM）性能估算工具。在选定模型与平台参数后，估算 **TTFT**、**Prefill TPS**、**Decode TPS**、**运行时内存**及关键公式推导结果。
+
+> 定位：内部研发/性能分析工具。纯本地公式计算，不依赖在线推理服务。
+
+## 支持模型
+
+| Family | 模型 | 架构 | 参数 |
+|--------|------|------|------|
+| **DeepSeek V4** | DeepSeek-V4-Flash | Compressed MoE (MLA + CSA/HCA + mHC) | 200B / 6e active |
+| | DeepSeek-V4-Pro | Compressed MoE (同上) | 1.5T / 6e active |
+| **Gemma 4** | Gemma-4-12B-it | Dense Decoder (GQA/MQA + GeGLU) | 11.9B |
+| **Qwen3.5** | Qwen3.5-35B-A3B | Hybrid (Gated DeltaNet + Full GQA + MoE) | 35B / 3B active |
+
+## 技术栈
+
+- **前端**：React + Vite + TypeScript
+- **桌面壳**：Tauri（预留）
+- **计算方式**：纯客户端公式计算
+- **无后端 / 无在线推理**
+
+## 功能
+
+- **性能计算**：输入模型、平台参数（算力/带宽/显存）、token 范围，输出 Prefill TPS、Decode TPS、TTFT、显存预算
+- **Token 趋势**：序列长度变化下 TPS / 延迟 / 显存的趋势曲线
+- **瓶颈分析**：Compute-bound vs Bandwidth-bound 判定
+- **公式追溯**：每项结果均可追溯到输入参数 → 中间量 → 公式
+- **模型结构**：模型超参速查、层 schedule、结构流图
+- **桌面应用**：Tauri 打包为跨平台桌面 App
+
+## 项目结构
+
+```
+llm-perf-calculator/
+├── src/
+│   ├── app/                # 入口、路由、布局、全局样式
+│   ├── pages/              # 页面装配（性能计算 / 模型结构 / 公式说明）
+│   ├── features/
+│   │   └── performance-calculator/
+│   │       ├── components/ # 计算器 UI 组件
+│   │       ├── services/   # 性能计算引擎（核心公式）
+│   │       └── state/      # 全局 CalculatorProvider
+│   ├── components/         # 跨页面复用 UI 组件
+│   ├── domain/             # 稳定业务类型定义
+│   │   ├── model/          # ModelDefinition, FormulaStrategyId
+│   │   ├── performance/    # PerformanceResult, BottleneckType
+│   │   ├── platform/       # PlatformInput
+│   │   └── workload/       # WorkloadInput
+│   └── engines/
+│       ├── model-registry/ # 模型注册表（按 family 组织）
+│       └── formula-strategies/ # 公式策略（预留扩展点）
+├── data/
+│   ├── models/             # 模型结构化数据
+│   └── platform-presets/   # 平台参数预设
+├── docs/
+│   ├── app/design/         # 设计文档、架构文档、效果图
+│   ├── deepseek_v4/        # DeepSeek V4 架构分析
+│   ├── gemma_4/            # Gemma 4 架构分析
+│   └── Qwen_3.5/           # Qwen3.5 架构分析 + config
+├── src-tauri/              # Tauri 桌面宿主
+└── scripts/                # 数据整理、校验脚本
+```
+
+### 分层约束
+
+```
+pages/  ← 页面装配，不承载公式逻辑
+  ↓
+features/  ← 业务模块，组合 domain + engines
+  ↓
+engines/   ← 纯计算与注册（不依赖 pages/features）
+  ↓
+domain/    ← 稳定类型定义
+```
+
+## 快速开始
+
+```bash
+# 安装依赖
+npm install
+
+# 开发模式
+npm run dev
+
+# 生产构建
+npm run build
+
+# 预览构建产物
+npm run preview
+
+# Tauri 桌面应用（开发）
+npm run tauri dev
+```
+
+打开浏览器访问 `http://localhost:5173`，默认进入**性能计算**页面。
+
+## 使用方式
+
+### 1. 性能计算
+
+1. 在左侧导航选择 **性能计算**
+2. 选择模型家族 → 具体模型
+3. 设置平台参数：
+   - **算力吞吐**（TFLOPS）和 **算力利用率**
+   - **显存带宽**（GB/s）和 **带宽利用率**
+   - **显存容量**（GB）
+   - **精度配置**：Bytes/Weight、Bytes/Activation、Bytes/Expert
+4. 设置 Token 范围（Prefill 长度、Decode 上下文、输出长度、趋势范围）
+5. 点击 **开始计算**
+
+### 2. 模型结构
+
+查看选中模型的层级结构、关键超参、层 schedule。
+
+### 3. 公式说明
+
+公式参考页，记录各架构的 FLOPs / Memory 公式口径。
+
+## 计算口径
+
+### Prefill FLOPs
+
+根据不同架构拆解每层算力：
+
+| 架构 | 核心公式 |
+|------|----------|
+| Compressed MoE (DeepSeek V4) | MLA-Q + Shared-KV + CSA/HCA Compressor + Indexer (O(S²)) + MoE |
+| Dense Decoder (Gemma 4) | GQA/MQA + Sliding/Full attention + GeGLU MLP |
+| Hybrid Linear MoE (Qwen3.5) | Gated DeltaNet (O(S·D)) + Full GQA causal (O(S²·n_h·c)) + MoE |
+
+**Full attention causal 关键**：因果 mask 下有效 QK 对 ≈ S²/2，FLOPs 约减半。
+
+### Decode Memory
+
+```
+M_total = M_weights + M_kv_cache + M_tmp_peak + M_overhead
+```
+
+- **M_weights**：由 `totalParamsB`、`bytesPerWeight`、`bytesPerExpert` 动态计算
+- **M_kv_cache**：仅全注意层维护 KV cache；线性/压缩注意层只维护固定大小的状态
+- **M_tmp_peak**：单步 decode 的 `repeat_kv` 瞬时峰值
+
+### Decode TPS
+
+```
+TPS = min(compute_ceiling, bandwidth_ceiling)
+compute_ceiling = effective_flops / flops_per_token
+bandwidth_ceiling = effective_bandwidth / bytes_per_token
+```
+
+## 新增模型
+
+参见 [CLAUDE.md](./CLAUDE.md) 中的两阶段流程：
+
+1. **架构分析** — 分析 `config.json` + `transformers` 源码 → 生成 `docs/$family/$model.md`
+2. **工程适配** — 补 domain 类型 → 补模型注册表 → 补公式策略 → 页面适配
+
+关键原则：
+- 不同架构通过 `formulaStrategyId` 区分，**不要**把 DeepSeek V4 公式套到其他模型
+- 模型从 `engines/model-registry/` 统一注册，不在页面中手写模型列表
+
+## 设计文档
+
+- [主设计文档](docs/app/design/app-design-spec.md)
+- [架构设计文档](docs/app/design/architecture-design.md)
+- [性能计算页设计](docs/app/design/pages/performance-calculator.md)
+- [模型结构页设计](docs/app/design/pages/model-structure.md)
+- [公式说明页设计](docs/app/design/pages/formula-notes.md)
+
+## 模型架构分析
+
+- [DeepSeek-V4-Flash](docs/deepseek_v4/DeepSeek-V4-Flash.md)
+- [Qwen3.5-35B-A3B](docs/Qwen_3.5/Qwen3.5-35B-A3B.md)
+
+## License
+
+MIT

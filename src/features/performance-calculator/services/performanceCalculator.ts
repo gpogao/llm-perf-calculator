@@ -626,7 +626,15 @@ function computeFullResult(
     platform.batchSize,
     e
   );
-  const decodeWeightBytes = weightGb * 1_000_000_000;
+  // MoE decode: only active expert weights read per token
+  const nonExpertB = model.totalParamsB - model.totalExpertParamsB;
+  const expertB = model.totalExpertParamsB;
+  const activeExpertFraction = model.moeExperts > 0
+    ? model.activeExperts / model.moeExperts
+    : 1;
+  const decodeWeightBytes =
+    nonExpertB * 1_000_000_000 * platform.bytesPerWeight +
+    expertB * 1_000_000_000 * activeExpertFraction * platform.bytesPerExpert;
   const decodeBytes = decodeWeightBytes + decodeCacheTrafficBytes;
   const decodeComputeFlopsPerToken =
     (model.decoderLayers * model.hiddenSize * model.moeIntermediateSize * (model.activeExperts + 1)) /
@@ -947,6 +955,10 @@ function buildFormulaTrace(
     return buildDenseFormulaTrace(model, workload, result);
   }
 
+  if (model.formulaStrategyId === "hybrid-linear-moe") {
+    return buildHybridFormulaTrace(model, workload, result);
+  }
+
   return [
     {
       category: "prefill",
@@ -1204,6 +1216,404 @@ function buildFormulaTrace(
   ];
 }
 
+// ─────────────────────────────────────────────────────────────
+// Hybrid Linear-MoE helpers (Qwen3.5 Gated DeltaNet + Full GQA)
+// ─────────────────────────────────────────────────────────────
+
+function computeHybridLinearMoeResult(
+  model: ModelDefinition,
+  platform: PlatformInput,
+  workload: WorkloadInput,
+  sequenceLength: number
+): FullComputation {
+  const S = sequenceLength;
+  const B = platform.batchSize;
+  const S_ctx = workload.decodeContextLength;
+  const e = platform.bytesPerActivation;
+
+  const D = model.hiddenSize;
+  const n_h = model.attentionHeads;
+  const n_kv = model.kvHeads;
+  const c = model.headDim;
+  const fullLayers = model.fullAttentionLayerCount ?? 0;
+
+  const linearLayers = model.linearAttentionLayerCount ?? 0;
+  const n_khL = model.linearNumKeyHeads ?? 0;
+  const c_kL = model.linearKeyHeadDim ?? 0;
+  const n_vhL = model.linearNumValueHeads ?? 0;
+  const c_vL = model.linearValueHeadDim ?? 0;
+  const convK = model.linearConvKernelDim ?? 0;
+  const keyDim = n_khL * c_kL;
+  const valueDim = n_vhL * c_vL;
+  const convDim = 2 * keyDim + valueDim;
+
+  const I = model.moeIntermediateSize;
+  const k = model.activeExperts;
+
+  // ── Full Attention layer (GQA + causal) ──
+  const fullQGate = 2 * S * D * (2 * n_h * c);  // q_proj: Q+gate combined
+  const fullK = 2 * S * D * n_kv * c;
+  const fullV = 2 * S * D * n_kv * c;
+  const fullCore = 2 * S * S * n_h * c;          // causal ≈ S²/2 pairs × 4 = 2·S²·n_h·c
+  const fullOutput = 2 * S * n_h * c * D;
+  const fullMoe = 6 * S * D * I * (k + 1);
+
+  const fullLayer: LayerBreakdown = {
+    q: fullQGate,
+    kvProj: fullK + fullV,
+    core: fullCore,
+    compressor: 0,
+    indexerLin: 0,
+    indexerAttn: 0,
+    output: fullOutput,
+    moe: fullMoe,
+    total: fullQGate + fullK + fullV + fullCore + fullOutput + fullMoe
+  };
+
+  // ── Linear Attention layer (Gated DeltaNet) ──
+  const linQKV = 2 * S * D * convDim;             // in_proj_qkv: D → 2·keyDim+valueDim
+  const linZ = 2 * S * D * valueDim;              // in_proj_z: D → valueDim
+  const linAB = 2 * S * D * (2 * n_vhL);          // in_proj_a + in_proj_b
+  const linConv = 2 * convK * S * convDim;        // Conv1D depthwise
+  const linScan = 2 * S * n_vhL * c_kL * c_vL;    // gated delta rule scan
+  const linOutput = 2 * S * valueDim * D;         // out_proj: valueDim → D
+  const linMoe = fullMoe;                          // same MoE config
+
+  const linearLayer: LayerBreakdown = {
+    q: linQKV + linZ,                              // all input projections
+    kvProj: linAB,
+    core: linScan,
+    compressor: linConv,
+    indexerLin: 0,
+    indexerAttn: 0,
+    output: linOutput,
+    moe: linMoe,
+    total: linQKV + linZ + linAB + linConv + linScan + linOutput + linMoe
+  };
+
+  // ── Prefill total ──
+  const prefillFlops = fullLayers * fullLayer.total + linearLayers * linearLayer.total;
+
+  // ── Weight memory ──
+  const weightGb = computeWeightGb(model, platform);
+
+  // ── Persistent cache ──
+  // Full attention: KV cache (K+V, per layer)
+  const fullKVPerLayer = B * 2 * n_kv * S_ctx * c * e;
+  const fullKVTotal = fullLayers * fullKVPerLayer;
+
+  // Linear attention: conv_state + recurrent_state
+  const convStatePerLayer = B * convDim * convK * e;
+  // recurrent state: [B, n_v_heads, key_hd, value_hd], fp32 uses 2× bytesPerActivation
+  const recurrentStatePerLayer = B * n_vhL * c_kL * c_vL * (e * 2);
+  const linearStatePerLayer = convStatePerLayer + recurrentStatePerLayer;
+  const linearStateTotal = linearLayers * linearStatePerLayer;
+
+  const cacheBytes = fullKVTotal + linearStateTotal;
+  const cacheGb = bytesToGb(cacheBytes);
+
+  // ── Temp peak (full attention repeat_kv) ──
+  const fullTmpLkv = S_ctx + 1;
+  const tmpPeakBytes = B * 2 * 2 * n_h * fullTmpLkv * c;
+  const tmpPeakGb = bytesToGb(tmpPeakBytes);
+  const tmpPeakLkv = fullTmpLkv;
+
+  const overheadGb = Math.max(4, weightGb * 0.03);
+  const totalRuntimeMemoryGb = weightGb + cacheGb + tmpPeakGb + overheadGb;
+  const memoryFitsCapacity = totalRuntimeMemoryGb <= platform.memoryCapacityGb;
+
+  // ── TPS ──
+  const effectiveCompute = toFlops(platform.computeThroughputTflops * platform.computeEfficiency);
+  const effectiveBandwidth = gbpsToBytesPerSecond(
+    platform.memoryBandwidthGbps * platform.bandwidthEfficiency
+  );
+
+  const prefillComputeTps = (effectiveCompute * S) / prefillFlops;
+  const prefillTrafficBytes =
+    (weightGb * 1_000_000_000 + cacheGb * 1_000_000_000 * 0.1) * B;
+  const prefillBandwidthTps = (effectiveBandwidth * S) / prefillTrafficBytes;
+
+  // ── Decode FLOPs (single token) ──
+  const decodeFullQGate = 2 * D * (2 * n_h * c);
+  const decodeFullKV = 2 * D * n_kv * c * 2;           // K + V
+  const decodeFullCore = 2 * S_ctx * n_h * c * 2;       // QK^T + AV
+  const decodeFullOutput = 2 * n_h * c * D;
+  const decodeFullMoePerLayer = 6 * D * I * (k + 1);
+  const decodeFullPerLayer =
+    decodeFullQGate + decodeFullKV + decodeFullCore + decodeFullOutput + decodeFullMoePerLayer;
+
+  const decodeLinQKV = 2 * D * convDim;
+  const decodeLinZ = 2 * D * valueDim;
+  const decodeLinAB = 2 * D * (2 * n_vhL);
+  const decodeLinConv = 2 * convK * convDim;
+  const decodeLinScan = 2 * n_vhL * c_kL * c_vL;
+  const decodeLinOutput = 2 * valueDim * D;
+  const decodeLinMoePerLayer = decodeFullMoePerLayer;
+  const decodeLinPerLayer =
+    decodeLinQKV + decodeLinZ + decodeLinAB + decodeLinConv + decodeLinScan + decodeLinOutput + decodeLinMoePerLayer;
+
+  const decodeComputeFlopsPerToken =
+    fullLayers * decodeFullPerLayer + linearLayers * decodeLinPerLayer;
+
+  const decodeComputeTps = effectiveCompute / decodeComputeFlopsPerToken;
+
+  // ── Decode traffic bytes per token ──
+  const decodeFullBytesPerLayer = B * 2 * n_kv * S_ctx * c * e;    // read K+V
+  const decodeLinBytesPerLayer = B * (convDim * convK + n_vhL * c_kL * c_vL) * e;
+  const decodeCacheTrafficBytes =
+    fullLayers * decodeFullBytesPerLayer + linearLayers * decodeLinBytesPerLayer;
+
+  // MoE decode: only active expert weights read per token
+  const nonExpertB = model.totalParamsB - model.totalExpertParamsB;
+  const expertB = model.totalExpertParamsB;
+  const activeExpertFraction = model.moeExperts > 0
+    ? model.activeExperts / model.moeExperts
+    : 1;
+  const activeDecodeWeightBytes =
+    nonExpertB * 1_000_000_000 * platform.bytesPerWeight +
+    expertB * 1_000_000_000 * activeExpertFraction * platform.bytesPerExpert;
+
+  const decodeBytes = activeDecodeWeightBytes + decodeCacheTrafficBytes;
+  const decodeBandwidthTps = effectiveBandwidth / decodeBytes;
+
+  const prefillTps = Math.min(prefillComputeTps, prefillBandwidthTps);
+  const decodeTps = Math.min(decodeComputeTps, decodeBandwidthTps);
+  const ttftMs = (S / Math.max(prefillTps, 1e-6)) * 1000;
+
+  return {
+    prefillFlops,
+    decodeBytes,
+    decodeCacheBytes: decodeCacheTrafficBytes,
+    decodeWeightBytes: activeDecodeWeightBytes,
+    weightGb,
+    cacheGb,
+    persistentSlidingCacheBytes: 0,
+    persistentHcaCacheBytes: linearStatePerLayer,
+    persistentCsaCacheBytes: fullKVPerLayer,
+    persistentSlidingCacheTotalBytes: 0,
+    persistentHcaCacheTotalBytes: linearStateTotal,
+    persistentCsaCacheTotalBytes: fullKVTotal,
+    tmpPeakGb,
+    tmpPeakBytes,
+    tmpPeakLkv,
+    overheadGb,
+    totalRuntimeMemoryGb,
+    prefillComputeTps,
+    prefillBandwidthTps,
+    decodeComputeTps,
+    decodeBandwidthTps,
+    decodeComputeFlopsPerToken,
+    decodeSlidingLkv: 0,
+    decodeCsaLkv: S_ctx,
+    decodeHcaLkv: 0,
+    decodeSlidingBytesPerToken: 0,
+    decodeCsaBytesPerToken: decodeFullBytesPerLayer,
+    decodeHcaBytesPerToken: decodeLinBytesPerLayer,
+    prefillTps,
+    decodeTps,
+    ttftMs,
+    prefillBottleneck: inferBottleneck(prefillComputeTps, prefillBandwidthTps),
+    decodeBottleneck: inferBottleneck(decodeComputeTps, decodeBandwidthTps),
+    memoryFitsCapacity,
+    slidingLayer: { q: 0, kvProj: 0, core: 0, compressor: 0, indexerLin: 0, indexerAttn: 0, output: 0, moe: 0, total: 0 },
+    csaLayer: fullLayer,
+    hcaLayer: linearLayer
+  };
+}
+
+function buildHybridFormulaTrace(
+  model: ModelDefinition,
+  workload: WorkloadInput,
+  result: FullComputation
+): FormulaTraceSection[] {
+  const fullLayers = model.fullAttentionLayerCount ?? 0;
+  const linearLayers = model.linearAttentionLayerCount ?? 0;
+  const n_vhL = model.linearNumValueHeads ?? 0;
+  const c_kL = model.linearKeyHeadDim ?? 0;
+  const c_vL = model.linearValueHeadDim ?? 0;
+
+  const fullTotal = result.csaLayer.total * fullLayers;
+  const linearTotal = result.hcaLayer.total * linearLayers;
+
+  return [
+    {
+      category: "prefill",
+      rows: [
+        {
+          label: "Full layer Q+gate proj FLOPs",
+          expression: "2 · S · D · (2 · n_h · c)",
+          evaluated: `${formatTflops(result.csaLayer.q)} per layer × ${fullLayers} = ${formatTflops(result.csaLayer.q * fullLayers)}`
+        },
+        {
+          label: "Full layer KV proj FLOPs",
+          expression: "2 · S · D · n_kv · c · 2  (K+V)",
+          evaluated: `${formatTflops(result.csaLayer.kvProj)} per layer × ${fullLayers} = ${formatTflops(result.csaLayer.kvProj * fullLayers)}`
+        },
+        {
+          label: "Full core attention FLOPs (causal ≈ S²/2)",
+          expression: "2 · S² · n_h · c  (causal_factor=2)",
+          evaluated: `${formatTflops(result.csaLayer.core)} per layer × ${fullLayers} = ${formatTflops(result.csaLayer.core * fullLayers)}`
+        },
+        {
+          label: "Full output proj FLOPs",
+          expression: "2 · S · n_h · c · D",
+          evaluated: `${formatTflops(result.csaLayer.output)} per layer × ${fullLayers} = ${formatTflops(result.csaLayer.output * fullLayers)}`
+        },
+        {
+          label: "Linear in_proj_qkv + in_proj_z FLOPs",
+          expression: "2·S·D·(2·key_dim+value_dim) + 2·S·D·value_dim",
+          evaluated: `${formatTflops(result.hcaLayer.q)} per layer × ${linearLayers} = ${formatTflops(result.hcaLayer.q * linearLayers)}`
+        },
+        {
+          label: "Linear in_proj_a+b FLOPs",
+          expression: "2 · S · D · 2 · n_v_heads",
+          evaluated: `${formatTflops(result.hcaLayer.kvProj)} per layer × ${linearLayers} = ${formatTflops(result.hcaLayer.kvProj * linearLayers)}`
+        },
+        {
+          label: "Linear Conv1D FLOPs",
+          expression: "2 · kernel · S · conv_dim",
+          evaluated: `${formatTflops(result.hcaLayer.compressor)} per layer × ${linearLayers} = ${formatTflops(result.hcaLayer.compressor * linearLayers)}`
+        },
+        {
+          label: "Linear gated delta scan FLOPs",
+          expression: `2 · S · n_v_heads(${n_vhL}) · c_kL(${c_kL}) · c_vL(${c_vL})`,
+          evaluated: `${formatTflops(result.hcaLayer.core)} per layer × ${linearLayers} = ${formatTflops(result.hcaLayer.core * linearLayers)}`
+        },
+        {
+          label: "Linear output proj FLOPs",
+          expression: "2 · S · value_dim · D",
+          evaluated: `${formatTflops(result.hcaLayer.output)} per layer × ${linearLayers} = ${formatTflops(result.hcaLayer.output * linearLayers)}`
+        },
+        {
+          label: "MoE FLOPs (all layers, SwiGLU)",
+          expression: "6 · S · D · I · (k + 1)",
+          evaluated: `${formatTflops(result.csaLayer.moe)} per layer × ${model.decoderLayers} = ${formatTflops(result.csaLayer.moe * model.decoderLayers)}`
+        },
+        {
+          label: "Full layer total",
+          expression: "F_Q+gate + F_KV + F_core + F_O + F_MoE",
+          evaluated: `${formatTflops(result.csaLayer.total)} per layer × ${fullLayers} = ${formatTflops(fullTotal)}`
+        },
+        {
+          label: "Linear layer total",
+          expression: "F_inproj + F_conv + F_scan + F_O + F_MoE",
+          evaluated: `${formatTflops(result.hcaLayer.total)} per layer × ${linearLayers} = ${formatTflops(linearTotal)}`
+        },
+        {
+          label: "Prefill Total FLOPs",
+          expression: "L_full · F_full + L_linear · F_linear",
+          evaluated: `${formatTflops(result.prefillFlops)}`
+        }
+      ]
+    },
+    {
+      category: "decode",
+      rows: [
+        {
+          label: "Decode full attention visible length",
+          expression: "L_kv_decode(full) = S_ctx",
+          evaluated: `${result.decodeCsaLkv} tokens`
+        },
+        {
+          label: "Decode linear attention visible length",
+          expression: "L_kv_decode(linear) = 0 (recurrent state, no KV cache)",
+          evaluated: "0 tokens (recurrent scan)"
+        },
+        {
+          label: "Full attn bytes per token",
+          expression: "B · 2 · n_kv · S_ctx · c · bytes_per_elem (K+V read)",
+          evaluated: `${formatMb(result.decodeCsaBytesPerToken)} x ${fullLayers} = ${formatMb(result.decodeCsaBytesPerToken * fullLayers)}`
+        },
+        {
+          label: "Linear attn bytes per token",
+          expression: "B · (conv_state + recurrent_state) · bytes_per_elem",
+          evaluated: `${formatMb(result.decodeHcaBytesPerToken)} x ${linearLayers} = ${formatMb(result.decodeHcaBytesPerToken * linearLayers)}`
+        },
+        {
+          label: "Decode cache bytes per token",
+          expression: "L_full · B_full + L_linear · B_linear",
+          evaluated: formatMb(result.decodeCacheBytes)
+        },
+        {
+          label: "Decode weight bytes per token",
+          expression: "B_weights = N_non · bpw + N_exp · (k/E) · bpe",
+          evaluated: formatMb(result.decodeWeightBytes)
+        },
+        {
+          label: "Total decode bytes per token",
+          expression: "B_decode = B_weights + B_cache",
+          evaluated: `${formatMb(result.decodeWeightBytes)} + ${formatMb(result.decodeCacheBytes)} = ${formatMb(result.decodeBytes)}`
+        },
+        {
+          label: "Decode compute FLOPs per token (full+linear+MoE)",
+          expression: "per-section summed",
+          evaluated: formatGflops(result.decodeComputeFlopsPerToken)
+        },
+        {
+          label: "Decode compute ceiling",
+          expression: "effective_compute / FLOPs_per_token",
+          evaluated: `${result.decodeComputeTps.toFixed(2)} tokens/s`
+        },
+        {
+          label: "Decode bandwidth ceiling",
+          expression: "effective_bandwidth / bytes_per_token",
+          evaluated: `${result.decodeBandwidthTps.toFixed(2)} tokens/s`
+        },
+        {
+          label: "Effective Decode TPS",
+          expression: "min(compute_ceiling, bandwidth_ceiling)",
+          evaluated: `${result.decodeTps.toFixed(2)} tokens/s`
+        }
+      ]
+    },
+    {
+      category: "memory",
+      rows: [
+        {
+          label: "Weight memory",
+          expression: "M_weights = N_non · bpw + N_exp · bpe",
+          evaluated: `${result.weightGb.toFixed(2)} GB`
+        },
+        {
+          label: "Full attention KV cache (per layer)",
+          expression: "B · 2 · n_kv · S_ctx · c · bytes_per_elem",
+          evaluated: `${formatMb(result.persistentCsaCacheBytes)} × ${fullLayers} = ${formatMb(result.persistentCsaCacheTotalBytes)}`
+        },
+        {
+          label: "Linear attention state (per layer)",
+          expression: "B · (conv_state + recurrent_state) · bytes_per_elem",
+          evaluated: `${formatMb(result.persistentHcaCacheBytes)} × ${linearLayers} = ${formatMb(result.persistentHcaCacheTotalBytes)}`
+        },
+        {
+          label: "Persistent Decode Cache / State",
+          expression: "M_cache = M_fullKV + M_linearState",
+          evaluated: `${result.cacheGb.toFixed(3)} GB`
+        },
+        {
+          label: "Single-step Temp Peak",
+          expression: "B · 2 · 2 · n_h · S_ctx · c (repeat_kv)",
+          evaluated: `${formatMb(result.tmpPeakBytes)}; L_kv = ${result.tmpPeakLkv}`
+        },
+        {
+          label: "Runtime overhead",
+          expression: "max(4 GB, M_weights · 0.03)",
+          evaluated: `${result.overheadGb.toFixed(2)} GB`
+        },
+        {
+          label: "Decode base memory",
+          expression: "M_weights + M_cache",
+          evaluated: `${(result.weightGb + result.cacheGb).toFixed(2)} GB`
+        },
+        {
+          label: "Decode peak memory",
+          expression: "M_weights + M_cache + M_tmp + M_overhead",
+          evaluated: `${result.totalRuntimeMemoryGb.toFixed(2)} GB`
+        }
+      ]
+    }
+  ];
+}
+
 export function calculatePerformanceResult(
   model: ModelDefinition,
   platform: PlatformInput,
@@ -1214,7 +1624,9 @@ export function calculatePerformanceResult(
       ? computeDenseFullResult
       : model.formulaStrategyId === "deepseek-v4-compressed-moe"
         ? computeFullResult
-        : null;
+        : model.formulaStrategyId === "hybrid-linear-moe"
+          ? computeHybridLinearMoeResult
+          : null;
 
   if (!computeFn) {
     throw new Error(`Unsupported formula strategy: ${model.formulaStrategyId}`);
@@ -1227,7 +1639,8 @@ export function calculatePerformanceResult(
     tokenLength <= workload.tokenRangeEnd;
     tokenLength += workload.tokenRangeStep
   ) {
-    const pointResult = computeFn(model, platform, workload, tokenLength);
+    const sweepWorkload = { ...workload, decodeContextLength: tokenLength };
+    const pointResult = computeFn(model, platform, sweepWorkload, tokenLength);
     tokenSweepSeries.push({
       tokenLength,
       prefillTps: pointResult.prefillTps,

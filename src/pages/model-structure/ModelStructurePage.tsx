@@ -29,8 +29,49 @@ function MetricStrip({ model }: { model: ModelDefinition }) {
 
 function StructureFlowDiagram({ model }: { model: ModelDefinition }) {
   const isDense = model.architectureKind === "dense-decoder";
+  const isHybrid = model.architectureKind === "hybrid-linear-moe";
 
-  const nodes = isDense
+  const nodes = isHybrid
+    ? [
+      {
+        label: "input_ids",
+        shape: "[B, S]",
+        dtype: "int32",
+        tone: "neutral" as const
+      },
+      {
+        label: "embed_tokens",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "hidden · √D",
+        tone: "blue" as const
+      },
+      {
+        label: `decoder layers (${model.decoderLayers})`,
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: `Gated DeltaNet + Full GQA + MoE`,
+        tone: "green" as const,
+        repeat: `x${model.decoderLayers}`
+      },
+      {
+        label: "norm",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "RMSNorm",
+        tone: "violet" as const
+      },
+      {
+        label: "lm_head",
+        shape: "[B, S, vocab]",
+        dtype: `${model.hiddenSize} → vocab (untied)`,
+        tone: "blue" as const
+      },
+      {
+        label: "logits",
+        shape: "[B, S, vocab]",
+        dtype: "float",
+        tone: "neutral" as const
+      }
+    ]
+    : isDense
     ? [
       {
         label: "input_ids",
@@ -178,8 +219,30 @@ function ScheduleBar({
 
 function ParameterTable({ model }: { model: ModelDefinition }) {
   const isDense = model.architectureKind === "dense-decoder";
+  const isHybrid = model.architectureKind === "hybrid-linear-moe";
 
-  const rows = isDense
+  const rows = isHybrid
+    ? [
+      ["hidden_size", model.hiddenSize, "Hidden dimension", "Prefill FLOPs"],
+      ["num_hidden_layers", model.decoderLayers, "Decoder layer count", "Prefill FLOPs"],
+      ["num_attention_heads", model.attentionHeads, "Full attention head count", "Prefill / Decode"],
+      ["num_key_value_heads", model.kvHeads, "Full attention KV heads (GQA)", "Decode Cache"],
+      ["head_dim", model.headDim, "Full attention per-head dimension", "Prefill / Decode"],
+      ["full_attention_layers", model.fullAttentionLayerCount ?? 0, "Full (GQA) attention layers", "Prefill FLOPs / Decode Cache"],
+      ["linear_attention_layers", model.linearAttentionLayerCount ?? 0, "Gated DeltaNet linear attention layers", "Prefill FLOPs / Decode State"],
+      ["linear_num_key_heads", model.linearNumKeyHeads ?? "-", "Linear attn key heads", "Prefill FLOPs"],
+      ["linear_key_head_dim", model.linearKeyHeadDim ?? "-", "Linear attn key head dim", "Prefill FLOPs"],
+      ["linear_num_value_heads", model.linearNumValueHeads ?? "-", "Linear attn value heads", "Prefill FLOPs"],
+      ["linear_value_head_dim", model.linearValueHeadDim ?? "-", "Linear attn value head dim", "Prefill FLOPs"],
+      ["linear_conv_kernel_dim", model.linearConvKernelDim ?? "-", "Linear attn conv kernel size", "Prefill FLOPs"],
+      ["moe_intermediate_size", model.moeIntermediateSize, "Expert FFN width", "Prefill FLOPs"],
+      ["num_experts", model.moeExperts, "Total routed experts", "Weight Memory"],
+      ["num_experts_per_tok", model.activeExperts, "Active experts per token", "Prefill FLOPs"],
+      ["totalParamsB", `${model.totalParamsB.toFixed(1)} B`, "Total parameters (billions)", "Weight Memory"],
+      ["totalExpertParamsB", `${model.totalExpertParamsB.toFixed(1)} B`, "Expert parameters (billions)", "Weight Memory"],
+      ["estimatedWeightsGb", `${model.estimatedWeightsGb.toFixed(2)} GB`, "Static weight estimate (reference)", "Decode Memory"]
+    ]
+    : isDense
     ? [
       ["hidden_size", model.hiddenSize, "Hidden dimension", "Prefill FLOPs"],
       ["num_hidden_layers", model.decoderLayers, "Decoder layer count", "Prefill FLOPs"],
@@ -299,7 +362,9 @@ export function ModelStructurePage() {
           <div>
             <h3>{model.displayName}</h3>
             <p>
-              {model.architectureKind === "dense-decoder"
+              {model.architectureKind === "hybrid-linear-moe"
+                ? "Hybrid decoder-only architecture with Gated DeltaNet linear attention, full GQA anchor layers, and routed MoE."
+                : model.architectureKind === "dense-decoder"
                 ? "Dense decoder-only architecture with GQA/MQA attention, sliding+full layer pattern, and GeGLU MLP."
                 : "DeepSeek V4 decoder-only architecture with compressed attention, mHC residual streams, and routed MoE."}
             </p>
@@ -322,7 +387,79 @@ export function ModelStructurePage() {
         </article>
 
         <aside className="module-stack">
-          {model.architectureKind === "dense-decoder" ? (
+          {model.architectureKind === "hybrid-linear-moe" ? (
+            <>
+              <article className="panel">
+                <h3>Full Attention (GQA)</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Heads</dt>
+                    <dd>{model.attentionHeads}</dd>
+                  </div>
+                  <div>
+                    <dt>KV Heads</dt>
+                    <dd>{model.kvHeads}</dd>
+                  </div>
+                  <div>
+                    <dt>Head Dim</dt>
+                    <dd>{model.headDim}</dd>
+                  </div>
+                  <div>
+                    <dt>GQA Ratio</dt>
+                    <dd>{model.attentionHeads / model.kvHeads}:1</dd>
+                  </div>
+                  <div>
+                    <dt>Q+Gate Proj</dt>
+                    <dd>D → 2·n_h·c = {model.hiddenSize * 2 * model.attentionHeads * model.headDim}</dd>
+                  </div>
+                </dl>
+              </article>
+
+              <article className="panel">
+                <h3>Linear Attention (Gated DeltaNet)</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Key Heads / Dim</dt>
+                    <dd>{model.linearNumKeyHeads} / {model.linearKeyHeadDim}</dd>
+                  </div>
+                  <div>
+                    <dt>Value Heads / Dim</dt>
+                    <dd>{model.linearNumValueHeads} / {model.linearValueHeadDim}</dd>
+                  </div>
+                  <div>
+                    <dt>Conv Kernel</dt>
+                    <dd>{model.linearConvKernelDim}</dd>
+                  </div>
+                  <div>
+                    <dt>Layers</dt>
+                    <dd>{model.linearAttentionLayerCount}</dd>
+                  </div>
+                </dl>
+              </article>
+
+              <article className="panel">
+                <h3>MoE</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Routed Experts</dt>
+                    <dd>{model.moeExperts}</dd>
+                  </div>
+                  <div>
+                    <dt>Active / Token</dt>
+                    <dd>{model.activeExperts}</dd>
+                  </div>
+                  <div>
+                    <dt>Intermediate</dt>
+                    <dd>{model.moeIntermediateSize}</dd>
+                  </div>
+                  <div>
+                    <dt>Shared Expert</dt>
+                    <dd>Yes (gated)</dd>
+                  </div>
+                </dl>
+              </article>
+            </>
+          ) : model.architectureKind === "dense-decoder" ? (
             <>
               <article className="panel">
                 <h3>Attention</h3>
@@ -467,7 +604,23 @@ export function ModelStructurePage() {
       </div>
 
       <div className="panel-grid">
-        {model.architectureKind === "dense-decoder" ? (
+        {model.architectureKind === "hybrid-linear-moe" ? (
+          <>
+            <ScheduleBar
+              title="Attention Schedule"
+              items={[
+                { label: "Linear (Gated DeltaNet)", count: model.linearAttentionLayerCount ?? 0, tone: "teal" },
+                { label: "Full (GQA)", count: model.fullAttentionLayerCount ?? 0, tone: "blue" }
+              ]}
+            />
+            <ScheduleBar
+              title="MoE Schedule"
+              items={[
+                { label: "MoE (routed 256 + shared)", count: model.decoderLayers, tone: "green" }
+              ]}
+            />
+          </>
+        ) : model.architectureKind === "dense-decoder" ? (
           <>
             <ScheduleBar
               title="Attention Schedule"

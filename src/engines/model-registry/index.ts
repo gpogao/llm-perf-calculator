@@ -1,15 +1,18 @@
 import type { ModelDefinition, ModelId } from "../../domain/model/types";
 import { deepseekV4Models } from "./deepseekV4Models";
 import { gemma4Models } from "./gemma4Models";
+import { qwen3_5Models } from "./qwen3_5Models";
 
 export const modelRegistry: ModelDefinition[] = [
   ...deepseekV4Models,
-  ...gemma4Models
+  ...gemma4Models,
+  ...qwen3_5Models
 ];
 
 const familyDisplayNames: Record<string, string> = {
   "deepseek-v4": "DeepSeek V4",
-  "gemma-4": "Gemma 4"
+  "gemma-4": "Gemma 4",
+  "qwen3.5": "Qwen3.5"
 };
 
 export type ModelFamilyOption = {

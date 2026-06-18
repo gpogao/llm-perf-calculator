@@ -4,13 +4,14 @@ export type ModelId = string;
 
 export type FormulaStrategyId =
   | "deepseek-v4-compressed-moe"
-  | "dense-decoder-transformer";
+  | "dense-decoder-transformer"
+  | "hybrid-linear-moe";
 
 export type ModelDefinition = {
   family: ModelFamily;
   id: ModelId;
   displayName: string;
-  architectureKind: "compressed-moe" | "dense-decoder";
+  architectureKind: "compressed-moe" | "dense-decoder" | "hybrid-linear-moe";
   formulaStrategyId: FormulaStrategyId;
   configSource?: string;
   contextLimit: number;
@@ -53,6 +54,20 @@ export type ModelDefinition = {
   attentionKEqV?: boolean;
   /** FFN 激活函数 */
   hiddenActivation?: string;
+
+  // —— hybrid-linear-moe 专用 ——
+  /** Gated DeltaNet 线性注意层数 */
+  linearAttentionLayerCount?: number;
+  /** 线性注意 key 头数 */
+  linearNumKeyHeads?: number;
+  /** 线性注意 key 头维度 */
+  linearKeyHeadDim?: number;
+  /** 线性注意 value 头数 */
+  linearNumValueHeads?: number;
+  /** 线性注意 value 头维度 */
+  linearValueHeadDim?: number;
+  /** 线性注意 conv kernel 大小 */
+  linearConvKernelDim?: number;
 
   // —— 同时适用 ——
   /** DeepSeek V4: 纯 sliding (无压缩) 层数; Dense: 等价 slidingAttentionLayerCount */
