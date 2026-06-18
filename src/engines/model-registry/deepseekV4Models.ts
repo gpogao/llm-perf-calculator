@@ -29,6 +29,8 @@ export const deepseekV4Models: ModelDefinition[] = [
     csaLayerCount: 21,
     hcaLayerCount: 20,
     slidingLayerCount: 2,
+    totalParamsB: 200,
+    totalExpertParamsB: 170,
     estimatedWeightsGb: 145.82
   },
   {
@@ -59,6 +61,8 @@ export const deepseekV4Models: ModelDefinition[] = [
     csaLayerCount: 30,
     hcaLayerCount: 31,
     slidingLayerCount: 0,
+    totalParamsB: 1500,
+    totalExpertParamsB: 1400,
     estimatedWeightsGb: 799.31
   }
 ];

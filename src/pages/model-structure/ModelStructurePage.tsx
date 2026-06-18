@@ -28,51 +28,93 @@ function MetricStrip({ model }: { model: ModelDefinition }) {
 }
 
 function StructureFlowDiagram({ model }: { model: ModelDefinition }) {
-  const nodes = [
-    {
-      label: "input_ids",
-      shape: "[B, S]",
-      dtype: "int32",
-      tone: "neutral"
-    },
-    {
-      label: "embed_tokens",
-      shape: `[B, S, ${model.hiddenSize}]`,
-      dtype: "hidden",
-      tone: "blue"
-    },
-    {
-      label: `decoder layers (${model.decoderLayers})`,
-      shape: `[B, S, ${model.hiddenSize}]`,
-      dtype: "Attention + Compressed Cache + MoE",
-      tone: "green",
-      repeat: `x${model.decoderLayers}`
-    },
-    {
-      label: "hc_head",
-      shape: `[B, S, ${model.hiddenSize}]`,
-      dtype: "4 streams -> 1 stream",
-      tone: "amber"
-    },
-    {
-      label: "norm",
-      shape: `[B, S, ${model.hiddenSize}]`,
-      dtype: "RMSNorm",
-      tone: "violet"
-    },
-    {
-      label: "lm_head",
-      shape: "[B, S, vocab]",
-      dtype: `${model.hiddenSize} -> 129280`,
-      tone: "blue"
-    },
-    {
-      label: "logits",
-      shape: "[B, S, vocab]",
-      dtype: "float",
-      tone: "neutral"
-    }
-  ];
+  const isDense = model.architectureKind === "dense-decoder";
+
+  const nodes = isDense
+    ? [
+      {
+        label: "input_ids",
+        shape: "[B, S]",
+        dtype: "int32",
+        tone: "neutral" as const
+      },
+      {
+        label: "embed_tokens",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "hidden · √D",
+        tone: "blue" as const
+      },
+      {
+        label: `decoder layers (${model.decoderLayers})`,
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: `GQA/MQA + Dense GeGLU`,
+        tone: "green" as const,
+        repeat: `x${model.decoderLayers}`
+      },
+      {
+        label: "norm",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "RMSNorm",
+        tone: "violet" as const
+      },
+      {
+        label: "lm_head",
+        shape: "[B, S, vocab]",
+        dtype: `${model.hiddenSize} → vocab (tied)`,
+        tone: "blue" as const
+      },
+      {
+        label: "logits",
+        shape: "[B, S, vocab]",
+        dtype: "float + softcapping",
+        tone: "neutral" as const
+      }
+    ]
+    : [
+      {
+        label: "input_ids",
+        shape: "[B, S]",
+        dtype: "int32",
+        tone: "neutral" as const
+      },
+      {
+        label: "embed_tokens",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "hidden",
+        tone: "blue" as const
+      },
+      {
+        label: `decoder layers (${model.decoderLayers})`,
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "Attention + Compressed Cache + MoE",
+        tone: "green" as const,
+        repeat: `x${model.decoderLayers}`
+      },
+      {
+        label: "hc_head",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "4 streams -> 1 stream",
+        tone: "amber" as const
+      },
+      {
+        label: "norm",
+        shape: `[B, S, ${model.hiddenSize}]`,
+        dtype: "RMSNorm",
+        tone: "violet" as const
+      },
+      {
+        label: "lm_head",
+        shape: "[B, S, vocab]",
+        dtype: `${model.hiddenSize} -> 129280`,
+        tone: "blue" as const
+      },
+      {
+        label: "logits",
+        shape: "[B, S, vocab]",
+        dtype: "float",
+        tone: "neutral" as const
+      }
+    ];
 
   return (
     <div className="structure-flow">
@@ -135,24 +177,46 @@ function ScheduleBar({
 }
 
 function ParameterTable({ model }: { model: ModelDefinition }) {
-  const rows = [
-    ["hidden_size", model.hiddenSize, "Hidden dimension", "Prefill FLOPs"],
-    ["num_hidden_layers", model.decoderLayers, "Decoder layer count", "Prefill FLOPs"],
-    ["num_attention_heads", model.attentionHeads, "Attention head count", "Prefill / Decode"],
-    ["num_key_value_heads", model.kvHeads, "Shared-KV MQA heads", "Decode Cache"],
-    ["head_dim", model.headDim, "Per-head dimension", "Prefill / Decode"],
-    ["q_lora_rank", model.qLoraRank, "Q low-rank projection", "Prefill FLOPs"],
-    ["o_lora_rank", model.oLoraRank, "Output projection rank", "Prefill FLOPs"],
-    ["sliding_layer_count", model.slidingLayerCount, "Number of sliding attention layers", "Prefill FLOPs / Decode Cache"],
-    ["csa_layer_count", model.csaLayerCount, "Number of compressed sparse attention layers", "Prefill FLOPs / Decode Cache"],
-    ["hca_layer_count", model.hcaLayerCount, "Number of heavily compressed attention layers", "Prefill FLOPs / Decode Cache"],
-    ["sliding_window", model.slidingWindow, "Local visible window size", "Prefill Core / Decode L_kv"],
-    ["index_topk", model.indexTopk, "CSA selected compressed blocks", "Prefill / Decode"],
-    ["compress_rate_csa", model.csaCompressRate, "CSA compression rate", "CSA Cache / Decode L_kv"],
-    ["compress_rate_hca", model.hcaCompressRate, "HCA compression rate", "HCA Cache / Decode L_kv"],
-    ["moe_intermediate_size", model.moeIntermediateSize, "Expert FFN width", "Prefill FLOPs"],
-    ["estimatedWeightsGb", `${model.estimatedWeightsGb.toFixed(2)} GB`, "Static weight estimate", "Decode Memory"]
-  ];
+  const isDense = model.architectureKind === "dense-decoder";
+
+  const rows = isDense
+    ? [
+      ["hidden_size", model.hiddenSize, "Hidden dimension", "Prefill FLOPs"],
+      ["num_hidden_layers", model.decoderLayers, "Decoder layer count", "Prefill FLOPs"],
+      ["num_attention_heads", model.attentionHeads, "Attention head count", "Prefill / Decode"],
+      ["num_key_value_heads", model.kvHeads, "KV heads (sliding, GQA)", "Decode Cache"],
+      ["head_dim", model.headDim, "Per-head dimension (sliding)", "Prefill / Decode"],
+      ["global_head_dim", model.globalHeadDim ?? model.headDim, "Full attention head dim", "Prefill FLOPs / Decode Cache"],
+      ["num_global_kv_heads", model.numGlobalKeyValueHeads ?? "-", "KV heads (full, MQA)", "Decode Cache"],
+      ["sliding_attention_layers", model.slidingAttentionLayerCount ?? model.slidingLayerCount, "Sliding attention layers", "Prefill FLOPs / Decode Cache"],
+      ["full_attention_layers", model.fullAttentionLayerCount ?? 0, "Full (global) attention layers", "Prefill FLOPs / Decode Cache"],
+      ["sliding_window", model.slidingWindow, "Local visible window size", "Prefill Core / Decode L_kv"],
+      ["intermediate_size", model.intermediateSize ?? "-", "FFN intermediate width", "Prefill FLOPs"],
+      ["hidden_activation", model.hiddenActivation ?? "gelu_pytorch_tanh", "FFN activation (GeGLU)", "Compute"],
+      ["totalParamsB", `${model.totalParamsB.toFixed(1)} B`, "Total parameters (billions)", "Weight Memory"],
+      ["totalExpertParamsB", `${model.totalExpertParamsB.toFixed(1)} B`, "Expert parameters (billions)", "Weight Memory"],
+      ["estimatedWeightsGb", `${model.estimatedWeightsGb.toFixed(2)} GB`, "Static weight estimate (reference)", "Decode Memory"]
+    ]
+    : [
+      ["hidden_size", model.hiddenSize, "Hidden dimension", "Prefill FLOPs"],
+      ["num_hidden_layers", model.decoderLayers, "Decoder layer count", "Prefill FLOPs"],
+      ["num_attention_heads", model.attentionHeads, "Attention head count", "Prefill / Decode"],
+      ["num_key_value_heads", model.kvHeads, "Shared-KV MQA heads", "Decode Cache"],
+      ["head_dim", model.headDim, "Per-head dimension", "Prefill / Decode"],
+      ["q_lora_rank", model.qLoraRank, "Q low-rank projection", "Prefill FLOPs"],
+      ["o_lora_rank", model.oLoraRank, "Output projection rank", "Prefill FLOPs"],
+      ["sliding_layer_count", model.slidingLayerCount, "Number of sliding attention layers", "Prefill FLOPs / Decode Cache"],
+      ["csa_layer_count", model.csaLayerCount, "Number of compressed sparse attention layers", "Prefill FLOPs / Decode Cache"],
+      ["hca_layer_count", model.hcaLayerCount, "Number of heavily compressed attention layers", "Prefill FLOPs / Decode Cache"],
+      ["sliding_window", model.slidingWindow, "Local visible window size", "Prefill Core / Decode L_kv"],
+      ["index_topk", model.indexTopk, "CSA selected compressed blocks", "Prefill / Decode"],
+      ["compress_rate_csa", model.csaCompressRate, "CSA compression rate", "CSA Cache / Decode L_kv"],
+      ["compress_rate_hca", model.hcaCompressRate, "HCA compression rate", "HCA Cache / Decode L_kv"],
+      ["moe_intermediate_size", model.moeIntermediateSize, "Expert FFN width", "Prefill FLOPs"],
+      ["totalParamsB", `${model.totalParamsB.toFixed(1)} B`, "Total parameters (billions)", "Weight Memory"],
+      ["totalExpertParamsB", `${model.totalExpertParamsB.toFixed(1)} B`, "Expert parameters (billions)", "Weight Memory"],
+      ["estimatedWeightsGb", `${model.estimatedWeightsGb.toFixed(2)} GB`, "Static weight estimate (reference)", "Decode Memory"]
+    ];
 
   return (
     <article className="panel panel--large">
@@ -235,8 +299,9 @@ export function ModelStructurePage() {
           <div>
             <h3>{model.displayName}</h3>
             <p>
-              DeepSeek V4 decoder-only architecture with compressed attention,
-              mHC residual streams, and routed MoE.
+              {model.architectureKind === "dense-decoder"
+                ? "Dense decoder-only architecture with GQA/MQA attention, sliding+full layer pattern, and GeGLU MLP."
+                : "DeepSeek V4 decoder-only architecture with compressed attention, mHC residual streams, and routed MoE."}
             </p>
           </div>
         </div>
@@ -257,90 +322,186 @@ export function ModelStructurePage() {
         </article>
 
         <aside className="module-stack">
-          <article className="panel">
-            <h3>Attention</h3>
-            <dl className="summary-list summary-list--compact">
-              <div>
-                <dt>Heads</dt>
-                <dd>{model.attentionHeads}</dd>
-              </div>
-              <div>
-                <dt>KV Heads</dt>
-                <dd>{model.kvHeads}</dd>
-              </div>
-              <div>
-                <dt>Head Dim</dt>
-                <dd>{model.headDim}</dd>
-              </div>
-              <div>
-                <dt>Q Rank</dt>
-                <dd>{model.qLoraRank}</dd>
-              </div>
-              <div>
-                <dt>O Groups</dt>
-                <dd>{model.oGroups}</dd>
-              </div>
-            </dl>
-          </article>
+          {model.architectureKind === "dense-decoder" ? (
+            <>
+              <article className="panel">
+                <h3>Attention</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Heads</dt>
+                    <dd>{model.attentionHeads}</dd>
+                  </div>
+                  <div>
+                    <dt>KV Heads (sliding)</dt>
+                    <dd>{model.kvHeads}</dd>
+                  </div>
+                  <div>
+                    <dt>Head Dim (sliding)</dt>
+                    <dd>{model.headDim}</dd>
+                  </div>
+                  <div>
+                    <dt>KV Heads (full)</dt>
+                    <dd>{model.numGlobalKeyValueHeads ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>Head Dim (full)</dt>
+                    <dd>{model.globalHeadDim ?? "-"}</dd>
+                  </div>
+                </dl>
+              </article>
 
-          <article className="panel">
-            <h3>Compressed Cache</h3>
-            <dl className="summary-list summary-list--compact">
-              <div>
-                <dt>Sliding Window</dt>
-                <dd>{model.slidingWindow}</dd>
-              </div>
-              <div>
-                <dt>CSA TopK</dt>
-                <dd>{model.indexTopk}</dd>
-              </div>
-              <div>
-                <dt>CSA Rate</dt>
-                <dd>{model.csaCompressRate}</dd>
-              </div>
-              <div>
-                <dt>HCA Rate</dt>
-                <dd>{model.hcaCompressRate}</dd>
-              </div>
-            </dl>
-          </article>
+              <article className="panel">
+                <h3>Sliding / Full Pattern</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Sliding Window</dt>
+                    <dd>{model.slidingWindow}</dd>
+                  </div>
+                  <div>
+                    <dt>Sliding Layers</dt>
+                    <dd>{model.slidingAttentionLayerCount ?? model.slidingLayerCount}</dd>
+                  </div>
+                  <div>
+                    <dt>Full Layers</dt>
+                    <dd>{model.fullAttentionLayerCount ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt>K=V Shared (full)</dt>
+                    <dd>{model.attentionKEqV ? "Yes" : "No"}</dd>
+                  </div>
+                </dl>
+              </article>
 
-          <article className="panel">
-            <h3>MoE</h3>
-            <dl className="summary-list summary-list--compact">
-              <div>
-                <dt>Routed Experts</dt>
-                <dd>{model.moeExperts}</dd>
-              </div>
-              <div>
-                <dt>Active / Token</dt>
-                <dd>{model.activeExperts}</dd>
-              </div>
-              <div>
-                <dt>Intermediate</dt>
-                <dd>{model.moeIntermediateSize}</dd>
-              </div>
-            </dl>
-          </article>
+              <article className="panel">
+                <h3>FFN</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Type</dt>
+                    <dd>GeGLU</dd>
+                  </div>
+                  <div>
+                    <dt>Intermediate</dt>
+                    <dd>{model.intermediateSize ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>Activation</dt>
+                    <dd>{model.hiddenActivation ?? "gelu_pytorch_tanh"}</dd>
+                  </div>
+                  <div>
+                    <dt>Layers</dt>
+                    <dd>All {model.decoderLayers}</dd>
+                  </div>
+                </dl>
+              </article>
+            </>
+          ) : (
+            <>
+              <article className="panel">
+                <h3>Attention</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Heads</dt>
+                    <dd>{model.attentionHeads}</dd>
+                  </div>
+                  <div>
+                    <dt>KV Heads</dt>
+                    <dd>{model.kvHeads}</dd>
+                  </div>
+                  <div>
+                    <dt>Head Dim</dt>
+                    <dd>{model.headDim}</dd>
+                  </div>
+                  <div>
+                    <dt>Q Rank</dt>
+                    <dd>{model.qLoraRank}</dd>
+                  </div>
+                  <div>
+                    <dt>O Groups</dt>
+                    <dd>{model.oGroups}</dd>
+                  </div>
+                </dl>
+              </article>
+
+              <article className="panel">
+                <h3>Compressed Cache</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Sliding Window</dt>
+                    <dd>{model.slidingWindow}</dd>
+                  </div>
+                  <div>
+                    <dt>CSA TopK</dt>
+                    <dd>{model.indexTopk}</dd>
+                  </div>
+                  <div>
+                    <dt>CSA Rate</dt>
+                    <dd>{model.csaCompressRate}</dd>
+                  </div>
+                  <div>
+                    <dt>HCA Rate</dt>
+                    <dd>{model.hcaCompressRate}</dd>
+                  </div>
+                </dl>
+              </article>
+
+              <article className="panel">
+                <h3>MoE</h3>
+                <dl className="summary-list summary-list--compact">
+                  <div>
+                    <dt>Routed Experts</dt>
+                    <dd>{model.moeExperts}</dd>
+                  </div>
+                  <div>
+                    <dt>Active / Token</dt>
+                    <dd>{model.activeExperts}</dd>
+                  </div>
+                  <div>
+                    <dt>Intermediate</dt>
+                    <dd>{model.moeIntermediateSize}</dd>
+                  </div>
+                </dl>
+              </article>
+            </>
+          )}
         </aside>
       </div>
 
       <div className="panel-grid">
-        <ScheduleBar
-          title="Attention Schedule"
-          items={[
-            { label: "Sliding", count: model.slidingLayerCount, tone: "neutral" },
-            { label: "CSA", count: model.csaLayerCount, tone: "blue" },
-            { label: "HCA", count: model.hcaLayerCount, tone: "teal" }
-          ]}
-        />
-        <ScheduleBar
-          title="MLP Schedule"
-          items={[
-            { label: "Hash MoE", count: Math.min(3, model.decoderLayers), tone: "amber" },
-            { label: "MoE", count: Math.max(model.decoderLayers - 3, 0), tone: "green" }
-          ]}
-        />
+        {model.architectureKind === "dense-decoder" ? (
+          <>
+            <ScheduleBar
+              title="Attention Schedule"
+              items={[
+                { label: "Sliding", count: model.slidingAttentionLayerCount ?? model.slidingLayerCount, tone: "neutral" },
+                { label: "Full", count: model.fullAttentionLayerCount ?? 0, tone: "blue" }
+              ]}
+            />
+            <ScheduleBar
+              title="MLP Schedule"
+              items={[
+                { label: "Dense GeGLU", count: model.decoderLayers, tone: "green" }
+              ]}
+            />
+          </>
+        ) : (
+          <>
+            <ScheduleBar
+              title="Attention Schedule"
+              items={[
+                { label: "Sliding", count: model.slidingLayerCount, tone: "neutral" },
+                { label: "CSA", count: model.csaLayerCount, tone: "blue" },
+                { label: "HCA", count: model.hcaLayerCount, tone: "teal" }
+              ]}
+            />
+            <ScheduleBar
+              title="MLP Schedule"
+              items={[
+                { label: "Hash MoE", count: Math.min(3, model.decoderLayers), tone: "amber" },
+                { label: "MoE", count: Math.max(model.decoderLayers - 3, 0), tone: "green" }
+              ]}
+            />
+          </>
+        )}
       </div>
 
       <ParameterTable model={model} />

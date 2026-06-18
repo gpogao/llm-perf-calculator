@@ -40,7 +40,9 @@ const defaultState: CalculatorState = {
     computeEfficiency: 0.4,
     bandwidthEfficiency: 0.6,
     batchSize: 1,
-    precisionAssumptions: "FP8 weights + BF16 activations + FP4 experts"
+    bytesPerWeight: 1,
+    bytesPerActivation: 2,
+    bytesPerExpert: 0.5
   },
   workload: {
     prefillTokenLength: 131072,

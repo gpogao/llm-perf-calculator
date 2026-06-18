@@ -236,14 +236,46 @@ export function CalculatorControls({
               <FieldError message={validationErrors.memoryCapacityGb} />
             </label>
             <label className="field">
-              <span>Precision Assumptions</span>
+              <span>Bytes / Weight</span>
               <input
-                type="text"
-                value={platform.precisionAssumptions}
+                type="number"
+                step="0.5"
+                min="0.5"
+                max="4"
+                value={platform.bytesPerWeight}
                 onChange={(event) =>
-                  onPlatformChange("precisionAssumptions", event.target.value)
+                  onPlatformChange("bytesPerWeight", numberValue(event.target.value))
                 }
               />
+              <small>1=FP8, 2=BF16</small>
+            </label>
+            <label className="field">
+              <span>Bytes / Activation</span>
+              <input
+                type="number"
+                step="0.5"
+                min="0.5"
+                max="4"
+                value={platform.bytesPerActivation}
+                onChange={(event) =>
+                  onPlatformChange("bytesPerActivation", numberValue(event.target.value))
+                }
+              />
+              <small>Cache element precision</small>
+            </label>
+            <label className="field">
+              <span>Bytes / Expert</span>
+              <input
+                type="number"
+                step="0.5"
+                min="0.5"
+                max="4"
+                value={platform.bytesPerExpert}
+                onChange={(event) =>
+                  onPlatformChange("bytesPerExpert", numberValue(event.target.value))
+                }
+              />
+              <small>0.5=FP4, 1=FP8</small>
             </label>
           </div>
         </article>

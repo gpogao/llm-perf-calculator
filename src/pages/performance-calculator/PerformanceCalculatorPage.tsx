@@ -95,8 +95,16 @@ export function PerformanceCalculatorPage() {
                   <span>{state.workload.decodeContextLength.toLocaleString()} tokens</span>
                 </div>
                 <div className="stack-list__row">
-                  <strong>Precision</strong>
-                  <span>{state.platform.precisionAssumptions}</span>
+                  <strong>Bytes / Weight</strong>
+                  <span>{state.platform.bytesPerWeight} B/param</span>
+                </div>
+                <div className="stack-list__row">
+                  <strong>Bytes / Activation</strong>
+                  <span>{state.platform.bytesPerActivation} B/elem</span>
+                </div>
+                <div className="stack-list__row">
+                  <strong>Bytes / Expert</strong>
+                  <span>{state.platform.bytesPerExpert} B/param</span>
                 </div>
               </div>
             </article>
