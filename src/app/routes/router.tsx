@@ -1,11 +1,11 @@
-import { createBrowserRouter, Navigate } from "react-router-dom";
+import { createHashRouter, Navigate } from "react-router-dom";
 import { App } from "../App";
 import { FormulaNotesPage } from "../../pages/formula-notes/FormulaNotesPage";
 import { HistoryPage } from "../../pages/history/HistoryPage";
 import { ModelStructurePage } from "../../pages/model-structure/ModelStructurePage";
 import { PerformanceCalculatorPage } from "../../pages/performance-calculator/PerformanceCalculatorPage";
 
-export const appRouter = createBrowserRouter([
+export const appRouter = createHashRouter([
   {
     path: "/",
     element: <App />,
@@ -33,4 +33,3 @@ export const appRouter = createBrowserRouter([
     ]
   }
 ]);
-

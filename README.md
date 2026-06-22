@@ -11,12 +11,13 @@
 | **DeepSeek V4** | DeepSeek-V4-Flash | Compressed MoE (MLA + CSA/HCA + mHC) | 200B / 6e active |
 | | DeepSeek-V4-Pro | Compressed MoE (同上) | 1.5T / 6e active |
 | **Gemma 4** | Gemma-4-12B-it | Dense Decoder (GQA/MQA + GeGLU) | 11.9B |
+| | google/gemma-4-26B-A4B-it | Dense Decoder MoE (Sliding/Full + routed MoE) | 26B / A4B |
 | **Qwen3.5** | Qwen3.5-35B-A3B | Hybrid (Gated DeltaNet + Full GQA + MoE) | 35B / 3B active |
 
 ## 技术栈
 
 - **前端**：React + Vite + TypeScript
-- **桌面壳**：Tauri（预留）
+- **桌面壳**：Tauri 2
 - **计算方式**：纯客户端公式计算
 - **无后端 / 无在线推理**
 
@@ -90,10 +91,18 @@ npm run build
 npm run preview
 
 # Tauri 桌面应用（开发）
-npm run tauri dev
+npm run desktop:dev
+
+# Tauri 桌面应用（打包）
+npm run desktop:build
+
+# WSL / Linux 下只打包 deb 和 rpm
+npm run desktop:build:linux
 ```
 
 打开浏览器访问 `http://localhost:5173`，默认进入**性能计算**页面。
+
+桌面应用构建依赖本机 Rust / Cargo 和 Tauri 系统依赖。Web 构建不需要 Rust。`desktop:build` 会按当前操作系统生成对应桌面包；WSL / Linux 下如需避开 AppImage，可使用 `desktop:build:linux` 只生成 `deb` / `rpm`。
 
 ## 使用方式
 
@@ -151,7 +160,7 @@ bandwidth_ceiling = effective_bandwidth / bytes_per_token
 
 ## 新增模型
 
-参见 [CLAUDE.md](./CLAUDE.md) 中的两阶段流程：
+参见 [AGENTS.md](./AGENTS.md) 中的两阶段流程：
 
 1. **架构分析** — 分析 `config.json` + `transformers` 源码 → 生成 `docs/$family/$model.md`
 2. **工程适配** — 补 domain 类型 → 补模型注册表 → 补公式策略 → 页面适配
@@ -171,6 +180,8 @@ bandwidth_ceiling = effective_bandwidth / bytes_per_token
 ## 模型架构分析
 
 - [DeepSeek-V4-Flash](docs/deepseek_v4/DeepSeek-V4-Flash.md)
+- [Gemma-4-12B-it](docs/gemma_4/Gemma-4-12B-it.md)
+- [google/gemma-4-26B-A4B-it](docs/gemma_4/gemma-4-26B-A4B-it.md)
 - [Qwen3.5-35B-A3B](docs/Qwen_3.5/Qwen3.5-35B-A3B.md)
 
 ## License
