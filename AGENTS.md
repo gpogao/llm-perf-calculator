@@ -132,6 +132,36 @@
 
 - `docs/app/design/images/`
 
+## 新增模型流程
+
+新增 model family 或 model 时，先完成模型结构分析，再做工程适配。
+
+### 1. 模型结构分析
+
+- 前置材料：
+  - 模型 `config.json`。没有时向用户索要。
+  - 可用于核对结构的本地 `transformers` 推理代码。
+- 产出文档：`docs/$model_family/$model_id.md`。
+  - `$model_family` 与模型注册表中的 `family` 字段一致，例如 `deepseek_v4`。
+  - `$model_id` 与 `ModelDefinition.id` 一致，例如 `DeepSeek-V4-Flash.md`。
+  - `config.json` 保存到 `docs/$model_family/config/$model_id-config.json`。
+  - 参考实例：`docs/deepseek_v4/DeepSeek-V4-Flash.md`。
+- 文档应覆盖：
+  - 顶层结构、核心超参、层类型 schedule。
+  - 单层残差流、Attention、MoE、KV Cache、RoPE、量化或部署相关信息。
+  - ASCII 字符图或 Mermaid 图，并标注关键维度。
+  - Prefill 阶段 FLOPs 拆解与占比。
+  - Decode 阶段权重常驻、持久 cache、单步临时工作集和 128K 场景显存估算。
+- 架构文档和算力/显存估算需经用户确认后，再进入工程适配。
+
+### 2. 工程适配
+
+- 必要时在 `src/domain/model/types.ts` 补充 `architectureKind` 或 `formulaStrategyId`。
+- 在 `src/engines/model-registry/` 新增或扩展 family 文件，并在 `index.ts` 注册模型与 `familyDisplayNames`。
+- 必要时在 `src/engines/formula-strategies/` 新增公式策略，通过 `formulaStrategyId` 区分口径。
+- 必要时把结构化静态数据放入 `data/models/$family/`。
+- 页面只能按 `architectureKind` 做条件展示，不要手写模型列表或硬编码公式。
+
 ## 推荐开发顺序
 
 1. 初始化前端工程基础文件。
