@@ -45,7 +45,10 @@
 5. 首版先支持 `DeepSeek V4` 家族：
    - `DeepSeek-V4-Flash`
    - `DeepSeek-V4-Pro`
-6. 架构必须为后续支持更多模型留出通用扩展空间。
+6. 当前已扩展支持 `Gemma 4` family：
+   - `Gemma-4-12B-it`
+   - `google/gemma-4-26B-A4B-it`
+7. 架构必须为后续支持更多模型留出通用扩展空间。
 
 ### 3.2 技术与交付方向
 

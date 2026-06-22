@@ -11,7 +11,7 @@
 - token 长度变化趋势
 - 模型结构和公式追溯
 
-首版支持 `DeepSeek V4` 家族，但架构必须允许后续接入其他模型族，例如 `google/gemma-4-12B-it`。
+首版支持 `DeepSeek V4` 家族，并已扩展接入 `Gemma 4` family，包括 `Gemma-4-12B-it` 和 `google/gemma-4-26B-A4B-it`。
 
 ## 2. 技术栈
 
@@ -91,8 +91,16 @@ type ModelDefinition = {
   family: string;
   id: string;
   displayName: string;
-  architectureKind: "compressed-moe" | "dense-decoder";
-  formulaStrategyId: "deepseek-v4-compressed-moe" | "dense-decoder-transformer";
+  architectureKind:
+    | "compressed-moe"
+    | "dense-decoder"
+    | "dense-decoder-moe"
+    | "hybrid-linear-moe";
+  formulaStrategyId:
+    | "deepseek-v4-compressed-moe"
+    | "dense-decoder-transformer"
+    | "dense-decoder-moe"
+    | "hybrid-linear-moe";
   configSource?: string;
   contextLimit: number;
   decoderLayers: number;
@@ -122,6 +130,8 @@ type ModelDefinition = {
 当前已注册模型：
 
 - `src/engines/model-registry/deepseekV4Models.ts`
+- `src/engines/model-registry/gemma4Models.ts`
+- `src/engines/model-registry/qwen3_5Models.ts`
 
 统一入口：
 
@@ -129,9 +139,12 @@ type ModelDefinition = {
 
 ## 6. 公式策略设计
 
-当前实际实现的公式策略是：
+当前实际实现的公式策略包括：
 
 - `deepseek-v4-compressed-moe`
+- `dense-decoder-transformer`
+- `dense-decoder-moe`
+- `hybrid-linear-moe`
 
 当前计算实现位置：
 
@@ -148,7 +161,14 @@ type ModelDefinition = {
 - single-step temp peak memory
 - runtime overhead
 
-注意：`formulaStrategyId !== "deepseek-v4-compressed-moe"` 时，当前计算引擎会抛错，避免未实现策略被错误套用 DeepSeek V4 公式。
+注意：未知 `formulaStrategyId` 会抛错，避免未实现策略被错误套用到其他模型上。
+
+`dense-decoder-moe` 用于 Gemma 4 这类 sliding/full attention + routed MoE FFN 架构：
+
+- Prefill 复用 dense decoder 的 sliding/full attention FLOPs 拆解。
+- FFN FLOPs 使用 `6 * S * D * moe_intermediate_size * (activeExperts + 1)`。
+- Decode 权重读取按非专家全量 + active expert fraction 估算。
+- KV cache 分为 sliding window cache 和 full attention cache。
 
 ## 7. 添加新模型的推荐流程
 
@@ -356,4 +376,3 @@ type ModelDefinition =
 ```
 
 这样可以避免 dense 模型被迫填写无意义字段。
-

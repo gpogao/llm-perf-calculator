@@ -28,7 +28,10 @@ function MetricStrip({ model }: { model: ModelDefinition }) {
 }
 
 function StructureFlowDiagram({ model }: { model: ModelDefinition }) {
-  const isDense = model.architectureKind === "dense-decoder";
+  const isDense =
+    model.architectureKind === "dense-decoder" ||
+    model.architectureKind === "dense-decoder-moe";
+  const isDenseMoe = model.architectureKind === "dense-decoder-moe";
   const isHybrid = model.architectureKind === "hybrid-linear-moe";
 
   const nodes = isHybrid
@@ -88,7 +91,7 @@ function StructureFlowDiagram({ model }: { model: ModelDefinition }) {
       {
         label: `decoder layers (${model.decoderLayers})`,
         shape: `[B, S, ${model.hiddenSize}]`,
-        dtype: `GQA/MQA + Dense GeGLU`,
+        dtype: isDenseMoe ? "GQA/MQA + Routed MoE" : "GQA/MQA + Dense GeGLU",
         tone: "green" as const,
         repeat: `x${model.decoderLayers}`
       },
@@ -218,7 +221,9 @@ function ScheduleBar({
 }
 
 function ParameterTable({ model }: { model: ModelDefinition }) {
-  const isDense = model.architectureKind === "dense-decoder";
+  const isDense =
+    model.architectureKind === "dense-decoder" ||
+    model.architectureKind === "dense-decoder-moe";
   const isHybrid = model.architectureKind === "hybrid-linear-moe";
 
   const rows = isHybrid
@@ -364,6 +369,8 @@ export function ModelStructurePage() {
             <p>
               {model.architectureKind === "hybrid-linear-moe"
                 ? "Hybrid decoder-only architecture with Gated DeltaNet linear attention, full GQA anchor layers, and routed MoE."
+                : model.architectureKind === "dense-decoder-moe"
+                ? "Dense decoder-only architecture with sliding/full attention and routed MoE feed-forward blocks."
                 : model.architectureKind === "dense-decoder"
                 ? "Dense decoder-only architecture with GQA/MQA attention, sliding+full layer pattern, and GeGLU MLP."
                 : "DeepSeek V4 decoder-only architecture with compressed attention, mHC residual streams, and routed MoE."}
@@ -459,7 +466,7 @@ export function ModelStructurePage() {
                 </dl>
               </article>
             </>
-          ) : model.architectureKind === "dense-decoder" ? (
+          ) : model.architectureKind === "dense-decoder" || model.architectureKind === "dense-decoder-moe" ? (
             <>
               <article className="panel">
                 <h3>Attention</h3>
@@ -510,16 +517,26 @@ export function ModelStructurePage() {
               </article>
 
               <article className="panel">
-                <h3>FFN</h3>
+                <h3>{model.architectureKind === "dense-decoder-moe" ? "MoE FFN" : "FFN"}</h3>
                 <dl className="summary-list summary-list--compact">
                   <div>
                     <dt>Type</dt>
-                    <dd>GeGLU</dd>
+                    <dd>{model.architectureKind === "dense-decoder-moe" ? "Routed MoE" : "GeGLU"}</dd>
                   </div>
                   <div>
                     <dt>Intermediate</dt>
-                    <dd>{model.intermediateSize ?? "-"}</dd>
+                    <dd>
+                      {model.architectureKind === "dense-decoder-moe"
+                        ? model.moeIntermediateSize
+                        : model.intermediateSize ?? "-"}
+                    </dd>
                   </div>
+                  {model.architectureKind === "dense-decoder-moe" ? (
+                    <div>
+                      <dt>Experts</dt>
+                      <dd>{model.activeExperts} / {model.moeExperts}</dd>
+                    </div>
+                  ) : null}
                   <div>
                     <dt>Activation</dt>
                     <dd>{model.hiddenActivation ?? "gelu_pytorch_tanh"}</dd>
@@ -620,7 +637,7 @@ export function ModelStructurePage() {
               ]}
             />
           </>
-        ) : model.architectureKind === "dense-decoder" ? (
+        ) : model.architectureKind === "dense-decoder" || model.architectureKind === "dense-decoder-moe" ? (
           <>
             <ScheduleBar
               title="Attention Schedule"
@@ -630,9 +647,13 @@ export function ModelStructurePage() {
               ]}
             />
             <ScheduleBar
-              title="MLP Schedule"
+              title={model.architectureKind === "dense-decoder-moe" ? "MoE Schedule" : "MLP Schedule"}
               items={[
-                { label: "Dense GeGLU", count: model.decoderLayers, tone: "green" }
+                {
+                  label: model.architectureKind === "dense-decoder-moe" ? "Routed MoE" : "Dense GeGLU",
+                  count: model.decoderLayers,
+                  tone: "green"
+                }
               ]}
             />
           </>

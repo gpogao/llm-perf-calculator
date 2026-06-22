@@ -4,6 +4,7 @@ export type ModelId = string;
 
 export type FormulaStrategyId =
   | "deepseek-v4-compressed-moe"
+  | "dense-decoder-moe"
   | "dense-decoder-transformer"
   | "hybrid-linear-moe";
 
@@ -11,7 +12,11 @@ export type ModelDefinition = {
   family: ModelFamily;
   id: ModelId;
   displayName: string;
-  architectureKind: "compressed-moe" | "dense-decoder" | "hybrid-linear-moe";
+  architectureKind:
+    | "compressed-moe"
+    | "dense-decoder"
+    | "dense-decoder-moe"
+    | "hybrid-linear-moe";
   formulaStrategyId: FormulaStrategyId;
   configSource?: string;
   contextLimit: number;

@@ -363,6 +363,10 @@ function denseFlopsOutput(model: ModelDefinition, seqLen: number, headDim: numbe
 }
 
 function denseFlopsMlp(model: ModelDefinition, seqLen: number) {
+  if (model.formulaStrategyId === "dense-decoder-moe") {
+    return 6 * seqLen * model.hiddenSize * model.moeIntermediateSize * (model.activeExperts + 1);
+  }
+
   const I = model.intermediateSize ?? model.moeIntermediateSize;
   return 6 * seqLen * model.hiddenSize * I;
 }
@@ -403,6 +407,43 @@ function denseCacheBytesPerLayer(
   e: number
 ) {
   return batchSize * e * lkv * nKv * headDim * 2;
+}
+
+function denseDecodeFlopsPerToken(
+  model: ModelDefinition,
+  contextLength: number,
+  slidingLayers: number,
+  fullLayers: number,
+  cSliding: number,
+  cFull: number,
+  nKvSliding: number,
+  nKvFull: number,
+  hasVProjSliding: boolean,
+  hasVProjFull: boolean,
+  decodeSlidingLkv: number,
+  decodeFullLkv: number
+) {
+  const D = model.hiddenSize;
+  const n_h = model.attentionHeads;
+  const I = model.moeIntermediateSize;
+  const k = model.activeExperts;
+
+  const slidingQ = 2 * D * n_h * cSliding;
+  const slidingKv = 2 * D * nKvSliding * cSliding * (hasVProjSliding ? 2 : 1);
+  const slidingCore = 4 * decodeSlidingLkv * n_h * cSliding;
+  const slidingOutput = 2 * n_h * cSliding * D;
+
+  const fullQ = 2 * D * n_h * cFull;
+  const fullKv = 2 * D * nKvFull * cFull * (hasVProjFull ? 2 : 1);
+  const fullCore = 4 * contextLength * n_h * cFull;
+  const fullOutput = 2 * n_h * cFull * D;
+
+  const moe = 6 * D * I * (k + 1);
+
+  return (
+    slidingLayers * (slidingQ + slidingKv + slidingCore + slidingOutput + moe) +
+    fullLayers * (fullQ + fullKv + fullCore + fullOutput + moe)
+  );
 }
 
 function computeDenseFullResult(
@@ -471,11 +512,34 @@ function computeDenseFullResult(
   const decodeFullBytesPerToken = denseCacheBytesPerLayer(model, B, decodeFullLkv, nKvFull, cFull, e);
   const decodeCacheTrafficBytes =
     slidingLayers * decodeSlidingBytesPerToken + fullLayers * decodeFullBytesPerToken;
-  const decodeWeightBytes = weightGb * 1_000_000_000;
+  const isDenseMoe = model.formulaStrategyId === "dense-decoder-moe";
+  const activeExpertFraction = model.moeExperts > 0
+    ? model.activeExperts / model.moeExperts
+    : 1;
+  const nonExpertB = model.totalParamsB - model.totalExpertParamsB;
+  const expertB = model.totalExpertParamsB;
+  const decodeWeightBytes = isDenseMoe
+    ? nonExpertB * 1_000_000_000 * platform.bytesPerWeight +
+      expertB * 1_000_000_000 * activeExpertFraction * platform.bytesPerExpert
+    : weightGb * 1_000_000_000;
   const decodeBytes = decodeWeightBytes + decodeCacheTrafficBytes;
 
-  const I = model.intermediateSize ?? model.moeIntermediateSize;
-  const decodeComputeFlopsPerToken = 6 * model.hiddenSize * I;
+  const decodeComputeFlopsPerToken = isDenseMoe
+    ? denseDecodeFlopsPerToken(
+      model,
+      S_ctx,
+      slidingLayers,
+      fullLayers,
+      cSliding,
+      cFull,
+      nKvSliding,
+      nKvFull,
+      hasVProjSliding,
+      hasVProjFull,
+      decodeSlidingLkv,
+      decodeFullLkv
+    )
+    : 6 * model.hiddenSize * (model.intermediateSize ?? model.moeIntermediateSize);
 
   const decodeComputeTps = effectiveCompute / decodeComputeFlopsPerToken;
   const decodeBandwidthTps = effectiveBandwidth / decodeBytes;
@@ -691,6 +755,7 @@ function buildDenseFormulaTrace(
   workload: WorkloadInput,
   result: FullComputation
 ): FormulaTraceSection[] {
+  const isDenseMoe = model.formulaStrategyId === "dense-decoder-moe";
   const slidingLayers = model.slidingAttentionLayerCount ?? model.slidingLayerCount;
   const fullLayers = model.fullAttentionLayerCount ?? 0;
   const cFull = model.globalHeadDim ?? model.headDim;
@@ -744,8 +809,10 @@ function buildDenseFormulaTrace(
           evaluated: `${formatTflops(result.csaLayer.output)} per layer × ${fullLayers} = ${formatTflops(result.csaLayer.output * fullLayers)}`
         },
         {
-          label: "MLP FLOPs (GeGLU, all layers)",
-          expression: "6 · S · D · I",
+          label: isDenseMoe
+            ? "MoE FLOPs (top-k routed experts, all layers)"
+            : "MLP FLOPs (GeGLU, all layers)",
+          expression: isDenseMoe ? "6 · S · D · I_moe · (k + 1)" : "6 · S · D · I",
           evaluated: `${formatTflops(result.slidingLayer.moe)} per layer × ${model.decoderLayers} = ${formatTflops(result.slidingLayer.moe * model.decoderLayers)}`
         },
         {
@@ -951,7 +1018,10 @@ function buildFormulaTrace(
   workload: WorkloadInput,
   result: FullComputation
 ): FormulaTraceSection[] {
-  if (model.formulaStrategyId === "dense-decoder-transformer") {
+  if (
+    model.formulaStrategyId === "dense-decoder-transformer" ||
+    model.formulaStrategyId === "dense-decoder-moe"
+  ) {
     return buildDenseFormulaTrace(model, workload, result);
   }
 
@@ -1620,7 +1690,8 @@ export function calculatePerformanceResult(
   workload: WorkloadInput
 ): PerformanceResult {
   const computeFn =
-    model.formulaStrategyId === "dense-decoder-transformer"
+    model.formulaStrategyId === "dense-decoder-transformer" ||
+    model.formulaStrategyId === "dense-decoder-moe"
       ? computeDenseFullResult
       : model.formulaStrategyId === "deepseek-v4-compressed-moe"
         ? computeFullResult
